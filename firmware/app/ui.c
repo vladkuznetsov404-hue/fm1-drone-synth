@@ -10,8 +10,8 @@
  *
  * Lazy drawing: each area has a signature of what it shows (area_sig) and is drawn only when that changes; a page
  * change or app_redraw clears the screen and draws everything. */
-enum { PG_HOME, PG_EDIT, PG_FX, PG_ENV, PG_LFO, PG_TAPE, PG_TAPE2, PG_GLO, NPG };   /* SELECT's order */
-enum { A_HEAD, A_SOUND, A_R0, A_R1, A_R2, A_R3, A_NOTES, A_TAPE, NA };
+enum { PG_HOME, PG_EDIT, PG_FX, PG_ENV, PG_LFO, PG_DELAY, PG_DELAY2, PG_TAPE, PG_TAPE2, PG_GLO, NPG };   /* SELECT's order */
+enum { A_HEAD, A_SOUND, A_R0, A_R1, A_R2, A_R3, A_NOTES, A_TAPE, A_SCENE, A_DIALS, NA };
 
 #define C_BLANK (-1)             /* a row with nothing on it */
 #define C_VER (-2)               /* GLO's version line */
@@ -24,12 +24,17 @@ static const int16_t CELLS[NPG][4] = {
     [PG_FX] = {P_DRIVE, P_TONE, P_CAB, P_LEVEL},
     [PG_ENV] = {P_ATTACK, P_RELEASE, C_BLANK, C_BLANK},
     [PG_LFO] = {P_RATE, P_TOPITCH, P_TOCUT, P_TOLEVEL},
+    [PG_DELAY] = {C_G + G_DT, C_G + G_DFB, C_G + G_DMIX, C_G + G_DHEADS},
+    [PG_DELAY2] = {C_G + G_DWOB, C_G + G_DDULL, C_BLANK, C_BLANK},
     [PG_TAPE] = {C_G + G_SPEED, C_G + G_DIR, C_G + G_DECAY, C_G + G_WEAR},
     [PG_TAPE2] = {C_G + G_BRAKE, C_BLANK, C_BLANK, C_BLANK},
     [PG_GLO] = {C_G + G_CH, C_G + G_TRS, C_G + G_VOL, C_VER},
 };
 static const int16_t CELLS_FM[4] = {P_RATIO, P_FB, P_INDEX, P_SUB};
-static const char *const PG_TITLE[NPG] = {"HOME", "EDIT", "FX", "ENV", "LFO", "TAPE", "TAPE 2", "GLO"};
+static const char *const PG_TITLE[NPG] = {"HOME", "EDIT", "FX", "ENV", "LFO", "DELAY", "DELAY 2", "TAPE", "TAPE 2", "GLO"};
+static const uint8_t HEAD_ORDER[7] = {1, 2, 4, 3, 5, 6, 7};   /* HEADS as the knob steps through it: one head, two, three */
+
+static int page_scene(uint32_t p) { return p == PG_FX || p == PG_DELAY || p == PG_DELAY2; }   /* a picture, a strip of dials */
 
 static struct {
     uint8_t page, dlg, dlg_slot, full;
@@ -52,7 +57,8 @@ static int ui_live(int32_t code)                 /* does this value reach the so
            code == P_TOLEVEL ||                 /* (milestone 4: BREATH) */
            code == C_G + G_SPEED || code == C_G + G_DIR || code == C_G + G_DECAY || code == C_G + G_WEAR ||
            code == C_G + G_BRAKE ||             /* (milestones 6, 7: the cassette) */
-           code == P_RATIO || code == P_FB || code == P_INDEX;   /* (milestone 5: FM) */
+           code == P_RATIO || code == P_FB || code == P_INDEX ||   /* (milestone 5: FM) */
+           (code >= C_G + G_DT && code <= C_G + G_DDULL);   /* (the tape echo) */
 }
 
 static int32_t cell(uint32_t page, uint32_t i)
@@ -71,6 +77,13 @@ static void cell_add(int32_t code, int32_t steps)
 {
     const par_t *p = cell_par(code);
     int16_t *v = code >= C_G ? &set.g[code - C_G] : &cur.p[code];
+    if (code == C_G + G_DHEADS) {                /* the masks in the order one, two, three heads */
+        int32_t k = 0;
+        while (k < 6 && HEAD_ORDER[k] != *v)
+            k++;
+        *v = HEAD_ORDER[clamp16(k + steps, 0, 6)];
+        return;
+    }
     if (p)
         *v = clamp16(*v + steps, p->lo, p->hi);
 }
@@ -100,8 +113,15 @@ static uint32_t area_sig(uint32_t a)
     case A_HEAD:
         h = h_add(h, cur.engine);
         h = h_add(h, (uint32_t)set.g[G_OCT]);
+        if (page_scene(ui.page)) {               /* (no sound line here: its message and * go in the header) */
+            h = h_add(h, (uint32_t)snd_dirty());
+            if (toast_on())
+                h = h_add(h, (uint32_t)(uintptr_t)ui.toast);
+        }
         break;
     case A_SOUND:
+        if (page_scene(ui.page))
+            return h;
         if (toast_on())
             return h_add(h, (uint32_t)(uintptr_t)ui.toast);
         for (i = 0; i < NAME_LEN; i++)
@@ -111,7 +131,10 @@ static uint32_t area_sig(uint32_t a)
         h = h_add(h, snd.last_midi);
         break;
     case A_R0: case A_R1: case A_R2: case A_R3: {
-        int32_t c = cell(ui.page, a - A_R0);
+        int32_t c;
+        if (page_scene(ui.page))
+            return h;
+        c = cell(ui.page, a - A_R0);
         h = h_add(h, (uint32_t)c);
         h = h_add(h, (uint32_t)cell_get(c));
         break;
@@ -127,6 +150,26 @@ static uint32_t area_sig(uint32_t a)
         h = h_add(h, tape.st);
         h = h_add(h, tape_pct());
         break;
+    case A_SCENE:
+        if (ui.page == PG_DELAY || ui.page == PG_DELAY2) {   /* the tape moves: a new picture every ~70 ms */
+            h = h_add(h, fm1_ms / 70u);
+            for (i = G_DT; i <= G_DDULL; i++)
+                h = h_add(h, (uint32_t)set.g[i]);
+        } else if (ui.page == PG_FX) {
+            h = h_add(h, scope.count);
+            for (i = P_DRIVE; i <= P_LEVEL; i++)
+                h = h_add(h, (uint32_t)cur.p[i]);
+            h = h_add(h, (uint32_t)cur.p[P_MASSA]);
+        }
+        break;
+    case A_DIALS:
+        if (page_scene(ui.page))
+            for (i = 0; i < 4u; i++) {
+                int32_t c = cell(ui.page, i);
+                h = h_add(h, (uint32_t)c);
+                h = h_add(h, (uint32_t)cell_get(c));
+            }
+        break;
     }
     return h;
 }
@@ -137,9 +180,17 @@ static void draw_head(uint32_t y)
     char b[16];
     int32_t x;
     cv_begin(240, 24, T_BG);
+    if (page_scene(ui.page) && toast_on()) {
+        cv_text_in(0, 4, 240, &AF_M, ui.toast, T_ACCENT, T_BG);
+        cv_rect(0, 23, 240, 1, T_LINE);
+        cv_blit(0, y);
+        return;
+    }
     str_cpy(b, PG_TITLE[ui.page], sizeof b);
     if (ui.page == PG_EDIT)
         str_cat(b, cur.engine == ENG_FM ? " FM" : " SAW", sizeof b);
+    if (page_scene(ui.page) && snd_dirty())
+        str_cat(b, " *", sizeof b);
     cv_text(8, 4, &AF_M, b, T_ACCENT);
     str_cpy(b, "OCT ", sizeof b);
     par_text(b + 4, sizeof b - 4u, set.g[G_OCT], F_OCT);
@@ -296,13 +347,63 @@ static void draw_foot(uint32_t y)                /* the other pages: held notes 
     cv_blit(0, y);
 }
 
+static int32_t dial_at(int32_t code)             /* the knob's pointer: 0 .. 32 across its range */
+{
+    const par_t *p = cell_par(code);
+    int32_t v = cell_get(code), k = 0;
+    if (!p)
+        return 0;
+    if (code == C_G + G_DHEADS) {
+        while (k < 6 && HEAD_ORDER[k] != v)
+            k++;
+        return k * 32 / 6;
+    }
+    return (v - p->lo) * 32 / (p->hi - p->lo);
+}
+
+static const char *dial_label(int32_t code)      /* the strip's cell is 60 px: FUZZ DRIVE and FUZZ TONE are DRIVE and TONE */
+{
+    return code == P_DRIVE ? "DRIVE" : code == P_TONE ? "TONE" : cell_par(code)->label;
+}
+
+static void draw_dials(uint32_t y)               /* a scene page's four knobs: label, dial, value */
+{
+    char val[24];
+    uint32_t i;
+    cv_begin(240, 58, T_BG);
+    for (i = 0; i < 4u; i++) {
+        int32_t c = cell(ui.page, i);
+        const par_t *p = cell_par(c);
+        if (!p)
+            continue;
+        par_text(val, sizeof val, cell_get(c), p->fmt);
+        sc_dials_cell((int32_t)i * 60, dial_label(c), val, dial_at(c), 1);
+    }
+    cv_blit(0, y);
+}
+
 static void draw_area(uint32_t a)
 {
     int home = ui.page == PG_HOME;
     switch (a) {
     case A_HEAD: draw_head(0); break;
-    case A_SOUND: draw_sound(24); break;
+    case A_SOUND:
+        if (!page_scene(ui.page))
+            draw_sound(24);
+        break;
+    case A_SCENE:
+        if (ui.page == PG_FX)
+            sc_amp(26);
+        else if (ui.page == PG_DELAY || ui.page == PG_DELAY2)
+            sc_delay(26);
+        break;
+    case A_DIALS:
+        if (page_scene(ui.page))
+            draw_dials(152);
+        break;
     case A_R0: case A_R1: case A_R2: case A_R3:
+        if (page_scene(ui.page))
+            break;
         if (home)
             draw_row(128u + (a - A_R0) * 28u, 28, cell(ui.page, a - A_R0), a - A_R0);
         else
@@ -391,7 +492,7 @@ static void ui_page(uint32_t p)
 
 static void ui_leds(void)
 {
-    static const uint8_t PAGE_BTN[NPG] = {B_HOME, B_EDIT, B_FX, B_ENV, B_LFO, B_SEQ, B_SEQ, B_GLO};
+    static const uint8_t PAGE_BTN[NPG] = {B_HOME, B_EDIT, B_FX, B_ENV, B_LFO, B_ARP, B_ARP, B_SEQ, B_SEQ, B_GLO};
     uint32_t i, on[NB] = {0}, keys = 0;
     int32_t base = (int32_t)NOTE_KEY0 + 12 * set.g[G_OCT];
     on[PAGE_BTN[ui.page]] = !ui.dlg;
@@ -425,7 +526,7 @@ static void ui_frame(void)
         scope.count++;
         scope.ready = 0;
         ui.scope_t = fm1_ms;
-    } else if (ui.page == PG_HOME && !scope.req && fm1_ms - ui.scope_t >= 100u)
+    } else if ((ui.page == PG_HOME || ui.page == PG_FX) && !scope.req && fm1_ms - ui.scope_t >= 100u)
         scope.req = 1;
 
     if (ui.dlg) {                                /* the SAVE dialog takes SAVE / OCT+, OCT-, PRESETS */
@@ -452,6 +553,7 @@ static void ui_frame(void)
     if (PRESSED(B_LFO)) ui_page(PG_LFO);
     if (PRESSED(B_GLO)) ui_page(PG_GLO);
     if (PRESSED(B_SEQ)) ui_page(ui.page == PG_TAPE ? PG_TAPE2 : PG_TAPE);
+    if (PRESSED(B_ARP)) ui_page(ui.page == PG_DELAY ? PG_DELAY2 : PG_DELAY);
     if (sel)
         ui_page((uint32_t)(((int32_t)ui.page + sel % NPG + NPG) % NPG));
     if (PRESSED(B_OCTDN)) set.g[G_OCT] = clamp16(set.g[G_OCT] - 1, GP[G_OCT].lo, GP[G_OCT].hi);
@@ -460,7 +562,6 @@ static void ui_frame(void)
         snd.silence_req = 1;
         toast("SILENCE");
     }
-    if (PRESSED(B_ARP)) toast("ARP: SOON");
     if (alg)
         cur.engine = alg > 0 ? ENG_FM : ENG_SAW;
     if (pre) {

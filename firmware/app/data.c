@@ -20,7 +20,9 @@ enum { P_MASSA, P_BEATS, P_DARK, P_BREATH,                 /* HOME: the four mac
 #define P_ROOM 40                /* values room in a stored sound: NP can grow to it without moving the bank */
 
 /* the settings' values (stored: append only) */
-enum { G_CH, G_TRS, G_VOL, G_OCT, G_SLOT, G_SPEED, G_DIR, G_DECAY, G_WEAR, G_BRAKE, NG };
+enum { G_CH, G_TRS, G_VOL, G_OCT, G_SLOT, G_SPEED, G_DIR, G_DECAY, G_WEAR, G_BRAKE,
+       G_DT, G_DFB, G_DMIX, G_DHEADS, G_DWOB, G_DDULL,     /* the tape echo: TIME, REPEATS, MIX, HEADS (a mask), WOBBLE, DULL */
+       NG };
 #define G_ROOM 32
 
 #define NSND 16                  /* sound slots */
@@ -28,7 +30,7 @@ enum { G_CH, G_TRS, G_VOL, G_OCT, G_SLOT, G_SPEED, G_DIR, G_DECAY, G_WEAR, G_BRA
 enum { ENG_SAW, ENG_FM };
 
 /* how a value reads on the screen */
-enum { F_NUM, F_SEC10, F_SUBOCT, F_RATIO, F_CAB, F_HZ, F_CH, F_ONOFF, F_SPEED, F_DIR, F_OCT };
+enum { F_NUM, F_SEC10, F_SUBOCT, F_RATIO, F_CAB, F_HZ, F_CH, F_ONOFF, F_SPEED, F_DIR, F_OCT, F_MS, F_HEADS };
 
 typedef struct {
     const char *label;
@@ -63,6 +65,12 @@ static const par_t GP[NG] = {
     [G_DECAY] = {"DECAY", 0, 100, 10, F_NUM},
     [G_WEAR] = {"WEAR", 0, 100, 30, F_NUM},
     [G_BRAKE] = {"BRAKE", 2, 40, 15, F_SEC10},     /* 0.2 .. 4.0 s */
+    [G_DT] = {"TIME", 0, 100, 45, F_MS},           /* 60 .. 950 ms between the heads (dly_ms10) */
+    [G_DFB] = {"REPEATS", 0, 100, 40, F_NUM},
+    [G_DMIX] = {"ECHO", 0, 100, 0, F_NUM},         /* 0: off (the default: the instrument starts dry) */
+    [G_DHEADS] = {"HEADS", 1, 7, 3, F_HEADS},      /* a mask: 1, 2, 4 = the heads at D, 2 D, 3 D */
+    [G_DWOB] = {"WOBBLE", 0, 100, 25, F_NUM},
+    [G_DDULL] = {"DULL", 0, 100, 40, F_NUM},
 };
 
 typedef struct {
@@ -207,6 +215,9 @@ static int data_save(uint32_t slot)              /* main loop, ~100 ms (two reco
 
 static int snd_dirty(void) { return memcmp(&cur, &bank.s[set.g[G_SLOT]], sizeof cur) != 0; }
 
+/* the tape echo's TIME 0..100 as tenths of a ms between the heads: 60.0 .. 950.0 ms, quadratic (fine at the short end) */
+static int32_t dly_ms10(int32_t t) { return 600 + t * t * 89 / 100; }
+
 /* -------------------------------------------------------- values as text --- */
 static void str_cat(char *d, const char *s, unsigned max)   /* append, d stays terminated within max */
 {
@@ -243,7 +254,7 @@ static void fixed2(char *b, int32_t v, uint32_t dec)   /* v / 10^dec with dec de
 
 static void par_text(char *b, uint32_t n, int32_t v, uint32_t fmt)   /* n >= 16 */
 {
-    static const char *const CAB[3] = {"OFF", "4X12", "4X12 DARK"};
+    static const char *const CAB[3] = {"OFF", "4X12", "DARK"};
     (void)n;
     switch (fmt) {
     case F_SEC10: fixed2(b, v, 1); str_cat(b, " S", n); break;
@@ -259,6 +270,15 @@ static void par_text(char *b, uint32_t n, int32_t v, uint32_t fmt)   /* n >= 16 
         else fixed2(b, v, 2);
         break;
     case F_DIR: str_cpy(b, v ? "REVERSE" : "FORWARD", n); break;
+    case F_MS: num(b, dly_ms10(v) / 10); str_cat(b, " MS", n); break;
+    case F_HEADS: {
+        uint32_t k, m = 0;
+        for (k = 0; k < 3u; k++)
+            if ((v >> k) & 1)
+                b[m++] = (char)('1' + k);
+        b[m] = 0;
+        break;
+    }
     case F_OCT: if (v > 0) { b[0] = '+'; num(b + 1, v); } else num(b, v); break;
     default: num(b, v); break;
     }

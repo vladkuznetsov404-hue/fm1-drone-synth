@@ -37,9 +37,9 @@ The FM-1 has 27 keys, 14 buttons (FX SCL ENV LFO EDIT GLO HOME SAVE ARP SEQ PLAY
 | REC | press | Cassette (acts at once): on an empty tape start recording (the first pass sets the loop length); while recording close the loop and play; while the tape plays toggle **overdub**; when stopped play with overdub. |
 | REC | hold 1 s | Erase the tape. |
 | PLAY | press | Cassette: play / stop (while recording: close the loop and play; on an empty tape: nothing). Stop runs the **tape brake** (the loop slows down to silence over the BRAKE time); play starts it again (spins up). |
-| ARP | press | Not used in v1 (the screen says "ARP: SOON"). |
+| ARP | press | The tape echo: DELAY page; again: DELAY 2. |
 
-LEDs: the current page's button (SEQ for TAPE and TAPE 2), SAVE while the dialog is open, REC while recording or
+LEDs: the current page's button (ARP for DELAY and DELAY 2, SEQ for TAPE and TAPE 2), SAVE while the dialog is open, REC while recording or
 overdubbing, PLAY while playing, OCT− below octave 0, OCT+ above it, SCL while held, the keys of the latched notes.
 
 ## Screens (240 × 240, dark)
@@ -48,6 +48,10 @@ Palette `MASSA` (tools/gen_ui_palettes.py): black background, a warm grey for te
 (250, 96, 64), a pale hot red (255, 196, 168) for the active item; the dark red is the TINT blend (tracks, wells).
 The platform's contrast checks (black text on an 80 % fill of the value colour needs 4.5:1) do not allow a value
 colour as dark as #8B0000. The name MASSA in the large font on the boot screen, until the first frame.
+
+A *picture page* (FX, DELAY, DELAY 2; more to come) has a different frame: a header (the page, `*` when edited, a
+message in its place for 1.5 s), a 240 × 124 picture redrawn as it moves (~70 ms for the tape, ~100 ms for the amp),
+a strip of four dials (label, a knob with its pointer, the value) and the footer. The other pages:
 
 Every page has the same frame: a header (page name; engine and octave on the right), the sound line (slot, name,
 `*` when edited, the last MIDI note on the right; a short message such as SAVED, SILENCE, TAPE ERASED in its place
@@ -61,9 +65,16 @@ state. A value that does not reach the sound yet carries a dim SOON next to its 
   four macro knobs MASSA, BEATS, DARK, BREATH as compact rows.
 - **EDIT** (engine): SAW: layers per note (1..3), sub level, sub octave (−1/−2), spread curve. FM: ratio, feedback,
   index, sub level.
-- **FX**: fuzz drive, fuzz tone, cabinet (off / 4×12 / 4×12 dark), output level.
+- **FX**: fuzz drive, fuzz tone, cabinet (off / 4×12 / dark), output level. A picture page (see below): a combo
+  amp with its four knobs, the scope of what comes out (the fuzz squares it as DRIVE goes up) and four speakers whose
+  cones move with the level; CAB changes what is drawn (bare cones, a grille, a denser grille).
 - **ENV**: swell (attack 0..10 s), release 0..20 s, plus two free slots shown as "—".
 - **LFO**: breath rate (0.01..1 Hz), to pitch, to cutoff, to level.
+- **DELAY** (ARP): TIME (60..950 ms between the heads, quadratic), REPEATS, ECHO (mix, 0 = off: the default), HEADS
+  (1, 2, 3, 1+2, 1+3, 2+3, 1+2+3). **DELAY 2**: WOBBLE, DULL. A picture page: a loop of tape round two reels with
+  the record head and three playback heads. TIME moves the heads along the tape, the tape runs faster the shorter
+  the delay is, what is on the tape is the sound itself (the delay line's cells, on a log scale), and while TIME
+  glides the screen says SPINNING UP / SLOWING with head 1's pitch change.
 - **TAPE**: speed (½, 1, varispeed ½..1), direction (forward / reverse), decay per pass in overdub (0..100), wear
   (wow, flutter, saturation and hiss together, 0..100).
 - **TAPE 2**: BRAKE time (0.2..4 s); three free rows.
@@ -127,9 +138,20 @@ posts the buttons and shows the state. The details as built:
   while it plays; the old material is scaled by (1 − decay) each pass (Frippertronics-style).
 - **Speed**: ½ (an octave down) or 1, or varispeed between; **reverse**; **brake**: the speed ramps to zero over the
   BRAKE time (pitch falls), then the tape stops; PLAY spins it up again.
-- **Wear**: wow (~0.5 Hz) and flutter (~6–10 Hz) as a modulated read position, a soft tape saturation, hiss, and a
+- **Wear**: wow (~0.5 Hz) and flutter (~8 Hz) as a modulated read position, a soft tape saturation, hiss, and a
   slow loss of highs on each overdub pass.
 - The tape lives in RAM only: it is lost at power-off (by design).
+
+### The tape echo
+
+Over the whole master (after the cassette, before the volume). A tape machine in the Space Echo manner: a record
+head and playback heads at D, 2 D and 3 D, HEADS picks which play. TIME is the spacing D and it moves like a motor:
+it glides at a limited rate (~6 s across the range, with inertia), so while you turn it every repeat is read faster
+or slower than it was written (head 1 up to ±16 %, head 3 three times as far): the echoes bend as on a real machine.
+WOBBLE adds wow (~0.5 Hz) and flutter (~7 Hz) to D. Each pass through the loop loses highs (DULL), DC, and saturates
+softly; REPEATS up to 100 (feedback 1.07) lets the loop play itself, held at a peak of ~21 000 by the saturation.
+The line is 16-bit cells at 11 025 Hz, 32 768 of them (64 KB in the pool, 2.97 s). An empty line costs a scan of the
+block; a line quiet for its whole length is cleared, and so is one with ECHO 0 for 3 s.
 
 ## Timing and sequencing
 
@@ -142,7 +164,7 @@ REC presses).
   (store slot 1, 16 × 94 bytes = 1 504 of 4 076). Each sound keeps its value count and room for 40 values, so new
   values are appended and an older sound reads with them at their defaults.
 - **Settings** (MIDI channel, TRS MIDI IN, volume, octave, last sound, the cassette's values SPEED, DIRECTION, DECAY,
-  WEAR, BRAKE): one record (store slot 0), with its own value count.
+  WEAR, BRAKE, the tape echo's TIME, REPEATS, ECHO, HEADS, WOBBLE, DULL): one record (store slot 0), with its own value count.
 - Both are written by SAVE (confirmed in the dialog), never in the background: a save fades the audio ~100 ms.
   Every value read back is range-checked; a bad one takes its default, the rest are kept.
 - Not stored: the latched notes, the cassette.

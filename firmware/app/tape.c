@@ -26,8 +26,8 @@
 #define TAPE_MIN 2205u           /* a loop is at least 0.1 s */
 #define REC_HOLD_MS 1000u
 #define SPIN_BLOCKS 413          /* PLAY from STOP: up to speed in ~0.3 s */
-#define WOW_INC 15583u           /* ~0.5 Hz per block: 2^32 * 0.5 * CTL / FS */
-#define FLUT_INC 249330u         /* ~8 Hz */
+#define WOW_INC 1558278u         /* ~0.5 Hz per block: 2^32 * 0.5 * CTL / FS */
+#define FLUT_INC 24932000u       /* ~8 Hz */
 
 enum { TP_EMPTY, TP_REC, TP_PLAY, TP_DUB, TP_STOP };
 static const char *const TP_NAME[5] = {"EMPTY", "REC", "PLAY", "DUB", "STOP"};

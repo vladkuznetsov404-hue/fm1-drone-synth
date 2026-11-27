@@ -7,7 +7,9 @@
  *   fx.c     the chain after the voices (audio ISR): the fuzz, the cabinet, DARK, MASSA's drive
  *   breath.c BREATH: three slow LFOs on the pitch, the cutoff and the level (audio ISR, per block)
  *   tape.c   the cassette: its audio and transport (audio ISR), the buttons and the screen's values (main loop)
+ *   delay.c  the tape echo over the master: heads on a loop of tape, TIME as a motor, wobble, saturation (audio ISR)
  *   sound.c  the audio ISR: the latch, the voices, MIDI in
+ *   scenes.c the pictures: the tape echo's tape and heads, the combo amp, the dials (main loop)
  *   ui.c     the pages, the SAVE dialog, the controls, the LEDs */
 #ifndef APP_NAME
 #define APP_NAME "MASSA"
@@ -22,7 +24,9 @@
 #include "fx.c"
 #include "breath.c"
 #include "tape.c"
+#include "delay.c"
 #include "sound.c"
+#include "scenes.c"
 #include "ui.c"
 
 static void app_palette(void)                    /* MASSA's palette (tools/gen_ui_palettes.py), by name */

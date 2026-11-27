@@ -386,6 +386,7 @@ static void snd_render(int32_t *out, uint32_t n)
         ;
     fx_process(out, n, j < NV);                  /* the fuzz, the cabinet, DARK (fx.c) */
     tape_process(out, n);                        /* the cassette: records the chain, plays back over it (tape.c) */
+    dly_process(out, n);                         /* the tape echo over all of it (delay.c) */
     for (i = 0; i < n; i++) {
         int32_t s = out[2u * i] * vol >> 8;
         s = s > 32767 ? 32767 : s < -32767 ? -32767 : s;

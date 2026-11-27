@@ -109,6 +109,8 @@ static void reset_state(void)                    /* the app's RAM as at power-on
     memset(br.last, 0xFF, sizeof br.last);
     memset(&tape, 0, sizeof tape);
     tape.rnd = 0x1234567u;
+    memset(&dl, 0, sizeof dl);
+    memset(dl_cells, 0, sizeof dl_cells);
     memset(&cur, 0, sizeof cur);
     memset(&bank, 0, sizeof bank);
     memset(&set, 0, sizeof set);
@@ -128,6 +130,7 @@ static void screen(void)
     static const struct { uint32_t btn, page; const char *shot; } PAGES[] = {
         {B_EDIT, PG_EDIT, "build/shots/edit_saw.png"}, {B_FX, PG_FX, "build/shots/fx.png"},
         {B_ENV, PG_ENV, "build/shots/env.png"},        {B_LFO, PG_LFO, "build/shots/lfo.png"},
+        {B_ARP, PG_DELAY, "build/shots/delay.png"},    {B_ARP, PG_DELAY2, "build/shots/delay2.png"},
         {B_SEQ, PG_TAPE, "build/shots/tape.png"},      {B_SEQ, PG_TAPE2, "build/shots/tape2.png"},
         {B_GLO, PG_GLO, "build/shots/glo.png"},        {B_HOME, PG_HOME, "build/shots/home_again.png"},
     };
@@ -195,7 +198,12 @@ static void screen(void)
                     if (c >= C_G) set.g[c - C_G] = (int16_t)v; else cur.p[c] = (int16_t)v;
                     host_frame();
                     par_text(t, sizeof t, v, q->fmt);    /* label, SOON and value side by side, 8 px apart */
-                    if (22 + text_w(&AF_S, q->label) + 6 + text_w(&AF_S, "SOON") + 8 + text_w(&AF_M, t) > 232) {
+                    if (page_scene(p)) {                 /* a dial's cell: label and value each inside 58 px */
+                        if (text_w(&AF_S, dial_label(c)) > 58 || text_w(&AF_S, t) > 58) {
+                            overlap++;
+                            printf("  (dial too wide: %s %s)\n", dial_label(c), t);
+                        }
+                    } else if (22 + text_w(&AF_S, q->label) + 6 + text_w(&AF_S, "SOON") + 8 + text_w(&AF_M, t) > 232) {
                         overlap++;
                         printf("  (overlap: %s %s)\n", q->label, t);
                     }
@@ -292,7 +300,26 @@ static void controls(void)
     turn(EN_K1, -3);
 
     press(B_ARP);
-    check("ARP: says SOON", toast_on() && str_eq(ui.toast, "ARP: SOON"));
+    check("ARP: the DELAY page, ARP lit", ui.page == PG_DELAY && host_led[panel.btn[B_ARP]]);
+    press(B_ARP);
+    check("ARP again: DELAY 2 (WOBBLE, DULL)", ui.page == PG_DELAY2 && cell(PG_DELAY2, 0) == C_G + G_DWOB);
+    press(B_ARP);
+    turn(EN_K1, 5);
+    turn(EN_K2, -5);
+    turn(EN_K3, 7);
+    check("DELAY, KNOBS 1 2 3: TIME, REPEATS, ECHO move", set.g[G_DT] == GP[G_DT].def + 5 &&
+          set.g[G_DFB] == GP[G_DFB].def - 5 && set.g[G_DMIX] == GP[G_DMIX].def + 7);
+    {
+        int32_t h0 = set.g[G_DHEADS];
+        turn(EN_K4, 1);
+        check("DELAY, KNOB 4: HEADS steps 1, 2, 3, 12, 13, 23, 123 (from 12: 13)", h0 == 3 && set.g[G_DHEADS] == 5);
+        turn(EN_K4, 9);
+        check("HEADS: clamped at all three, and back to one", set.g[G_DHEADS] == 7);
+        turn(EN_K4, -9);
+        check("HEADS: one head at the low end", set.g[G_DHEADS] == 1);
+        set.g[G_DHEADS] = (int16_t)h0;
+    }
+    press(B_HOME);
 
     /* the cassette's transport (its clock is the audio: frames and audio run together here) */
     press_t(B_PLAY);
@@ -954,10 +981,30 @@ static void scope_shot(void)
     check("HOME: pictures of the drone, ~10 a second", scope.count - c0 >= 7u && scope.count - c0 <= 12u);
     check("HOME: silence a flat line; a drone a wave across the notes area", ink0 < 10u && wave_px() > 200u);
     host_png("build/shots/home_drone.png");
-    press(B_FX);
+    press(B_GLO);
     c0 = scope.count;
     run_frames(30);
     check("other pages: no pictures asked for", scope.count - c0 <= 1u);
+    press(B_FX);
+    c0 = scope.count;
+    run_frames(60);
+    check("FX: pictures for the amp, ~10 a second", scope.count - c0 >= 7u && scope.count - c0 <= 12u);
+    host_png("build/shots/fx_drone.png");
+    cur.p[P_DRIVE] = 100;
+    cur.p[P_MASSA] = 100;
+    run_frames(60);
+    host_png("build/shots/fx_drone_hot.png");
+    set.g[G_DMIX] = 70;
+    set.g[G_DFB] = 60;
+    set.g[G_DHEADS] = 7;
+    press(B_ARP);
+    run_frames(240);                             /* ~4 s: the echoes fill the tape */
+    host_png("build/shots/delay_drone.png");
+    set.g[G_DT] = 5;
+    run_frames(45);
+    host_png("build/shots/delay_glide.png");
+    check("DELAY: while TIME glides the picture shows the bend", dl.v_pub != 0);
+    set.g[G_DMIX] = 0;
     app_audio_stop();
     host_render(buf, 64);
 }
@@ -1166,6 +1213,258 @@ static void tape_audio(void)
     host_render(buf, 64);
 }
 
+/* ------------------------------------------------------------------ delay --- */
+#define DN 400000u
+static int32_t dl_in[DN + 64u];
+static int32_t dl_out[2u * (DN + 64u)];          /* left: the echo alone (out - in), right: the whole output */
+
+static void dly_setup(int t, int fb, int mix, int heads, int wob, int dull)
+{
+    memset(&dl, 0, sizeof dl);
+    memset(dl_cells, 0, sizeof dl_cells);
+    set_default();
+    set.g[G_DT] = (int16_t)t;
+    set.g[G_DFB] = (int16_t)fb;
+    set.g[G_DMIX] = (int16_t)mix;
+    set.g[G_DHEADS] = (int16_t)heads;
+    set.g[G_DWOB] = (int16_t)wob;
+    set.g[G_DDULL] = (int16_t)dull;
+}
+
+static void dly_run(const int32_t *in, uint32_t frames, int32_t *o)   /* whole blocks through dly_process */
+{
+    int32_t blk[2u * CTL];
+    uint32_t i, j;
+    for (i = 0; i + CTL <= frames; i += CTL) {
+        for (j = 0; j < CTL; j++) {
+            blk[2u * j] = in[i + j];
+            blk[2u * j + 1u] = 0;
+        }
+        dly_process(blk, CTL);
+        for (j = 0; j < CTL; j++) {
+            o[2u * (i + j)] = blk[2u * j] - in[i + j];
+            o[2u * (i + j) + 1u] = blk[2u * j];
+        }
+    }
+}
+
+static uint32_t argmax_abs(const int32_t *o, uint32_t from, uint32_t to)   /* the echo's loudest sample */
+{
+    uint32_t i, at = from;
+    int32_t m = -1;
+    for (i = from; i < to; i++)
+        if (abs(o[2u * i]) > m) {
+            m = abs(o[2u * i]);
+            at = i;
+        }
+    return at;
+}
+
+static void burst(uint32_t frames)               /* a click of 64 samples at 12 000 at the start */
+{
+    memset(dl_in, 0, (frames + 64u) * sizeof dl_in[0]);
+    memset(dl_out, 0, 2u * (frames + 64u) * sizeof dl_out[0]);
+    memset(dl_in, 0, 64u * sizeof dl_in[0]);
+    {
+        uint32_t i;
+        for (i = 0; i < 64u; i++)
+            dl_in[i] = 12000;
+    }
+}
+
+static void sine_in(uint32_t from, uint32_t frames, double hz, double amp)   /* phase-continuous from sample 0 */
+{
+    uint32_t i;
+    for (i = from; i < from + frames; i++)
+        dl_in[i] = (int32_t)(amp * sin(2.0 * M_PI * hz * i / FS));
+}
+
+static void delay_audio(void)
+{
+    uint32_t d, i, at[3];
+    int32_t pk;
+    double r;
+    reset_state();
+    host_boot();
+    check("TIME 0 .. 100: 60 ms .. 950 ms, rising", dly_ms10(0) == 600 && dly_ms10(100) == 9500 &&
+          dly_ms10(50) > dly_ms10(49));
+    check("the farthest head at the longest TIME (+ the wobble) is inside the line",
+          3u * (uint32_t)(((int64_t)dly_ms10(100) * DL_Q >> 16) + 20) < DL_N - 64u);
+
+    /* the timing of the heads */
+    d = 4u * (uint32_t)((int64_t)dly_ms10(45) * DL_Q >> 16);          /* TIME 45, in output samples */
+    dly_setup(45, 0, 100, 1, 0, 0);
+    burst(40000);
+    dly_run(dl_in, 40000, dl_out);
+    at[0] = argmax_abs(dl_out, 2000, 40000);
+    pk = abs(dl_out[2u * at[0]]);
+    check("head 1: one echo, D after the click (the click's edge, 0 .. 90 samples on)", at[0] + 8u >= d && at[0] <= d + 90u);
+    check("head 1: the echo is the click's size (the line is not attenuating it)", pk > 9000 && pk < 12500);
+    check("head 1 alone: nothing between and nothing after (below 2 %)",
+          abs(dl_out[2u * (d / 2u)]) < pk / 50 && abs(dl_out[2u * (2u * d)]) < pk / 50 &&
+          abs(dl_out[2u * (3u * d + 32u)]) < pk / 50);
+    dly_setup(45, 0, 100, 7, 0, 0);
+    burst(40000);
+    dly_run(dl_in, 40000, dl_out);
+    at[0] = argmax_abs(dl_out, 2000, d + 2000u);
+    at[1] = argmax_abs(dl_out, d + 2000u, 2u * d + 2000u);
+    at[2] = argmax_abs(dl_out, 2u * d + 2000u, 36000);
+    check("heads 1 2 3: echoes at D, 2 D, 3 D (each 0 .. 90 samples after)",
+          at[0] + 8u >= d && at[0] <= d + 90u && at[1] + 8u >= 2u * d && at[1] <= 2u * d + 90u &&
+          at[2] + 8u >= 3u * d && at[2] <= 3u * d + 90u);
+    r = (double)abs(dl_out[2u * at[2]]) / (double)abs(dl_out[2u * at[0]]);
+    check("three heads: equal echoes (+-10 %), each at 0.46 of one head's", r > 0.9 && r < 1.1 &&
+          abs(dl_out[2u * at[0]]) > 4000 && abs(dl_out[2u * at[0]]) < 5800);
+    dly_setup(45, 0, 100, 2, 0, 0);
+    burst(40000);
+    dly_run(dl_in, 40000, dl_out);
+    at[0] = argmax_abs(dl_out, 2000, 40000);
+    check("HEADS 2 only: the echo at 2 D", at[0] + 8u >= 2u * d && at[0] <= 2u * d + 90u &&
+          abs(dl_out[2u * (d + 32u)]) < 300);
+
+    /* MIX 0 is the dry signal itself */
+    dly_setup(45, 60, 0, 7, 50, 40);
+    {
+        uint32_t k;
+        uint32_t seed = 7;
+        for (k = 0; k < 160000u; k++) {
+            seed = seed * 1664525u + 1013904223u;
+            dl_in[k] = (int32_t)(seed >> 16) % 8000 - 4000;
+        }
+    }
+    dly_run(dl_in, 160000, dl_out);
+    {
+        int32_t m = 0;
+        for (i = 0; i < 160000u; i++)
+            m = abs(dl_out[2u * i]) > m ? abs(dl_out[2u * i]) : m;
+        check("ECHO 0: the signal passes untouched (exact), the line forgotten after 3 s (no cost)", m == 0 && !dl.dirty);
+    }
+
+    /* the repeats */
+    dly_setup(45, 50, 100, 1, 0, 0);
+    burst(60000);
+    dly_run(dl_in, 60000, dl_out);
+    at[0] = argmax_abs(dl_out, d, d + 400u);
+    at[1] = argmax_abs(dl_out, 2u * d, 2u * d + 400u);
+    r = (double)abs(dl_out[2u * at[1]]) / (double)abs(dl_out[2u * at[0]]);
+    check("REPEATS 50: the second echo is about half the first (0.35 .. 0.65)", r > 0.35 && r < 0.65);
+
+    /* REPEATS 100: it plays itself, held by the saturation */
+    dly_setup(10, 100, 100, 1, 0, 40);
+    memset(dl_in, 0, (DN + 64u) * sizeof dl_in[0]);
+    sine_in(0, 13000, 220.0, 8000.0);
+    dly_run(dl_in, 352000, dl_out);
+    pk = peak(dl_out + 2u * 308000u, 40000);
+    check("REPEATS 100: the loop sustains (a second after the input, RMS > 4 000)",
+          rms(dl_out + 2u * 308000u, 40000) > 4000.0);
+    check("REPEATS 100: held by the tape's saturation (a peak ~21 000, never past 26 000)",
+          pk > 12000 && pk < 26000);
+
+    /* and a decaying loop ends in exact silence */
+    dly_setup(10, 40, 100, 3, 20, 40);
+    memset(dl_in, 0, (DN + 64u) * sizeof dl_in[0]);
+    sine_in(0, 13000, 220.0, 8000.0);
+    dly_run(dl_in, 396000, dl_out);
+    check("REPEATS 40: the echoes die away (the last second is exactly silent)",
+          peak(dl_out + 2u * 356000u, 40000) == 0 && !dl.dirty);
+
+    /* TIME as a motor: the echoes bend */
+    dly_setup(100, 0, 100, 1, 0, 0);
+    memset(dl_in, 0, (DN + 64u) * sizeof dl_in[0]);
+    sine_in(0, 280000, 440.0, 6000.0);
+    dly_run(dl_in, 88200, dl_out);
+    r = pitch(dl_out + 2u * 66150u, 22050);
+    check("TIME steady: the echo's pitch is the input's (440 Hz +-4)", r > 436.0 && r < 444.0);
+    set.g[G_DT] = 0;
+    dly_run(dl_in + 88200u, 132300, dl_out + 2u * 88200u);
+    r = pitch(dl_out + 2u * 154350u, 22050);
+    check("TIME 100 -> 0: the heads close in, head 1 reads faster (about +16 %: 490 .. 525 Hz)", r > 490.0 && r < 525.0);
+    set.g[G_DT] = 100;
+    dly_run(dl_in + 220500u, 59600, dl_out + 2u * 220500u);
+    r = pitch(dl_out + 2u * 257000u, 22000);
+    check("TIME 0 -> 100: the heads part, head 1 reads slower (below 400 Hz)", r > 330.0 && r < 400.0);
+    check("D follows TIME at a limited speed (not there yet after 1.5 s)", dl.d > dly_ms10(0) * DL_Q * 3);
+
+    dly_setup(100, 0, 100, 4, 0, 0);
+    memset(dl_in, 0, (DN + 64u) * sizeof dl_in[0]);
+    sine_in(0, 330000, 440.0, 6000.0);
+    dly_run(dl_in, 154350, dl_out);
+    r = pitch(dl_out + 2u * 132300u, 22050);
+    check("head 3 at TIME 100: steady 440 Hz (+-4)", r > 436.0 && r < 444.0);
+    set.g[G_DT] = 0;
+    dly_run(dl_in + 154350u, 110250, dl_out + 2u * 154350u);
+    r = pitch(dl_out + 2u * 220500u, 22050);
+    check("head 3 bends three times as far as head 1 (+48 %: 610 .. 690 Hz)", r > 610.0 && r < 690.0);
+
+    /* WOBBLE */
+    {
+        double lo = 1e9, hi = 0, mean = 0;
+        uint32_t w;
+        dly_setup(20, 0, 100, 1, 100, 0);
+        memset(dl_in, 0, (DN + 64u) * sizeof dl_in[0]);
+        sine_in(0, 140000, 4000.0, 6000.0);
+        dly_run(dl_in, 140000, dl_out);
+        for (w = 0; w < 8u; w++) {
+            double f = pitch(dl_out + 2u * (30000u + w * 11025u), 11025);
+            lo = f < lo ? f : lo;
+            hi = f > hi ? f : hi;
+            mean += f / 8.0;
+        }
+        check("WOBBLE 100: the echo's pitch wavers (a spread over 0.4 %)", (hi - lo) / mean > 0.004);
+        dly_setup(20, 0, 100, 1, 0, 0);
+        lo = 1e9;
+        hi = 0;
+        dly_run(dl_in, 140000, dl_out);
+        for (w = 0; w < 8u; w++) {
+            double f = pitch(dl_out + 2u * (30000u + w * 11025u), 11025);
+            lo = f < lo ? f : lo;
+            hi = f > hi ? f : hi;
+        }
+        check("WOBBLE 0: the pitch is still (a spread under 0.15 %)", (hi - lo) / (hi + lo) * 2.0 < 0.0015);
+    }
+
+    /* silence costs nothing and changes nothing */
+    dly_setup(45, 60, 100, 7, 50, 40);
+    {
+        int32_t blk[2u * CTL];
+        memset(blk, 0, sizeof blk);
+        {
+            uint32_t w0 = dl.w;
+            dly_process(blk, CTL);
+            check("an empty line and a quiet input: the block untouched, the tape still running",
+                  peak(blk, CTL) == 0 && dl.w == w0 + CTL / 4u && !dl.dirty);
+        }
+    }
+
+    /* anything thrown at it: noise, every knob jumping, all heads, REPEATS 100 (run under ASan / UBSan too) */
+    {
+        uint32_t seed = 99, k, bl;
+        int32_t blk[2u * CTL], worst = 0;
+        dly_setup(50, 100, 100, 7, 100, 0);
+        for (bl = 0; bl < 40000u; bl++) {
+            if (bl % 300u == 0u) {
+                seed = seed * 1664525u + 1013904223u;
+                set.g[G_DT] = (int16_t)(seed >> 24) % 101;
+                set.g[G_DFB] = (int16_t)((seed >> 16 & 255u) % 101u);
+                set.g[G_DHEADS] = (int16_t)(1 + (seed >> 8 & 255u) % 7u);
+                set.g[G_DWOB] = (int16_t)((seed >> 4 & 255u) % 101u);
+                set.g[G_DDULL] = (int16_t)((seed >> 12 & 255u) % 101u);
+            }
+            for (k = 0; k < CTL; k++) {
+                seed = seed * 1664525u + 1013904223u;
+                blk[2u * k] = (int32_t)(seed >> 16) % 20000 - 10000;
+                blk[2u * k + 1u] = 0;
+            }
+            dly_process(blk, CTL);
+            for (k = 0; k < CTL; k++)
+                worst = abs(blk[2u * k]) > worst ? abs(blk[2u * k]) : worst;
+        }
+        check("TIME / REPEATS / HEADS / WOBBLE thrown about over noise: the output stays bounded (< 80 000)",
+              worst < 80000);
+    }
+    reset_state();
+}
+
 int main(void)
 {
     if (system("mkdir -p build/shots"))
@@ -1181,6 +1480,7 @@ int main(void)
     factory();
     scope_shot();
     tape_audio();
+    delay_audio();
     puts(failed ? "APP TEST FAILED" : "app test passed");
     return failed ? 1 : 0;
 }
