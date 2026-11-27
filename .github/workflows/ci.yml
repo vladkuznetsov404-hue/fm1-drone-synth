@@ -56,3 +56,31 @@ jobs:
             build/shots/
             build/tests.log
           if-no-files-found: ignore
+
+      # The browser emulator (built by the host tests into build/emu) goes to GitHub Pages from main, once the tests
+      # passed: a link to try each version with the mouse. The screenshots go with it (shots/).
+      - name: Emulator site
+        if: github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p build/emu/shots
+          cp build/shots/*.png build/emu/shots/ 2>/dev/null || true
+
+      - name: Upload the emulator for Pages
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/emu
+
+  pages:
+    needs: build-test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
