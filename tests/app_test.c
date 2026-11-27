@@ -78,6 +78,8 @@ static void reset_state(void)                    /* the app's RAM as at power-on
 {
     memset(&ui, 0, sizeof ui);
     memset(&snd, 0, sizeof snd);
+    memset(&fx, 0, sizeof fx);
+    memset(fx.last, 0xFF, sizeof fx.last);       /* (-1: never updated, as at power-on) */
     memset(&tape, 0, sizeof tape);
     memset(&cur, 0, sizeof cur);
     memset(&bank, 0, sizeof bank);
@@ -454,6 +456,7 @@ static void sound(void)
     power_cycle();
     host_render(buf, 1024);
     check("silence with nothing latched", peak(buf, 1024) == 0);
+    fx.bypass = 1;                               /* the voices alone: the chain has its own checks (fx_chain) */
     set.g[G_OCT] = 0;                            /* key 0 = F3, 174.61 Hz */
     cur.p[P_LAYERS] = 1;                         /* the latch, ramps and MIDI checks on one plain saw, no sub */
     cur.p[P_SUB] = 0;
@@ -552,6 +555,7 @@ static void engine(void)
     int32_t pk;
     host_nor_erase();
     power_cycle();
+    fx.bypass = 1;
     set.g[G_OCT] = 0;
     cur.p[P_ATTACK] = 0;
     cur.p[P_SUB] = 0;
@@ -587,6 +591,7 @@ static void engine(void)
     cur.p[P_BEATS] = 0;
     cur.p[P_LAYERS] = 1;
     cur.p[P_SUB] = 0;
+    cur.p[P_MASSA] = 0;                          /* (MASSA lifts the sub: checked in fx_chain) */
     host_render(buf, S); host_render(buf, S);
     a1 = level_at(buf, S, F / 2.0);
     cur.p[P_SUB] = 100;
@@ -632,6 +637,115 @@ static void engine(void)
     host_render(buf, 64);
 }
 
+static double rms(const int32_t *b, uint32_t frames)
+{
+    double a = 0;
+    uint32_t i;
+    for (i = 0; i < frames; i++)
+        a += (double)b[2u * i] * b[2u * i];
+    return sqrt(a / frames);
+}
+
+static double highs(const int32_t *b, uint32_t frames)   /* the loudest harmonic of F2 between 5 and 8 kHz */
+{
+    double m = 0, f;
+    for (f = 87.307 * 58; f < 8000.0; f += 87.307) {
+        double l = level_at(b, frames, f);
+        m = l > m ? l : m;
+    }
+    return m;
+}
+
+/* The chain after the voices (milestone 3): the fuzz (drive, MASSA, tone), the level, the cabinet, DARK, MASSA's
+ * sub, the silence after the release. On one F2 (87.3 Hz), one layer (clean harmonics to measure), a second at a
+ * time. (The fuzz's asymmetry is not checked by its peaks: a driven wave is near square, and the DC block after the
+ * clip makes its two sides equal again; it shows as even harmonics at moderate drive.) */
+static void fx_chain(void)
+{
+    const uint32_t S = BLOCKS(FS);
+    double r0, r1, h0, h1, h2;
+    int32_t p0, p1;
+    host_nor_erase();
+    power_cycle();
+    set.g[G_OCT] = -1;                           /* key 0 = F2 */
+    cur.p[P_ATTACK] = 0;
+    cur.p[P_RELEASE] = 0;
+    cur.p[P_DRIVE] = 0;
+    cur.p[P_MASSA] = 0;
+    cur.p[P_DARK] = 0;
+    cur.p[P_CAB] = 0;
+    cur.p[P_TONE] = 100;
+    cur.p[P_LAYERS] = 1;
+    cur.p[P_SUB] = 0;
+    tap_key(0);
+    host_render(buf, S); host_render(buf, S);
+    p0 = peak(buf, S);
+    r0 = rms(buf, S) / p0;
+    check("fuzz at 0 dB: a light saturation, below the level's full output", p0 > 3000 && p0 <= FX_OUT + 200);
+    cur.p[P_DRIVE] = 100;
+    cur.p[P_MASSA] = 100;
+    host_render(buf, S); host_render(buf, S);
+    p1 = peak(buf, S);
+    r1 = rms(buf, S) / p1;
+    check("DRIVE + MASSA 100: squashed (RMS / peak up by a third), the peak held by the clip", r1 > r0 * 1.33 &&
+          p1 <= FX_OUT + 200);
+    h0 = highs(buf, S);
+    cur.p[P_TONE] = 0;
+    host_render(buf, S); host_render(buf, S);
+    check("FUZZ TONE 100 -> 0: the highs at least 6 dB down", highs(buf, S) < h0 / 2);
+    cur.p[P_TONE] = 100;
+    cur.p[P_CAB] = 1;
+    host_render(buf, S); host_render(buf, S);
+    h1 = highs(buf, S);
+    cur.p[P_CAB] = 2;
+    host_render(buf, S); host_render(buf, S);
+    h2 = highs(buf, S);
+    check("CABINET off -> 4x12 -> dark: the fizz above 5 kHz 6 dB down, then 10 dB more", h1 < h0 / 2 &&
+          h2 < h1 / 3.16);
+    cur.p[P_CAB] = 0;
+    cur.p[P_DARK] = 100;
+    host_render(buf, S); host_render(buf, S);
+    check("DARK 0 -> 100: the highs 30 dB down, the fundamental kept", highs(buf, S) < h0 / 30 &&
+          level_at(buf, S, 87.307) > 300);
+    cur.p[P_DARK] = 0;
+    cur.p[P_LEVEL] = 50;
+    host_render(buf, S); host_render(buf, S);
+    p0 = peak(buf, S);
+    cur.p[P_LEVEL] = 100;
+    host_render(buf, S); host_render(buf, S);
+    check("LEVEL 50 -> 100: twice as loud (+-5 %)", fabs((double)peak(buf, S) / p0 - 2.0) < 0.1);
+    cur.p[P_LEVEL] = 0;
+    host_render(buf, S);
+    check("LEVEL 0: silent", peak(buf + 2u * 1024u, S - 1024u) == 0);
+    cur.p[P_LEVEL] = 80;
+
+    fx.bypass = 1;                               /* MASSA lifts the sub (on the voices) */
+    cur.p[P_SUB] = 100;
+    cur.p[P_MASSA] = 0;
+    host_render(buf, S); host_render(buf, S);
+    h0 = level_at(buf, S, 87.307 / 2.0);
+    cur.p[P_MASSA] = 100;
+    host_render(buf, S); host_render(buf, S);
+    check("MASSA 0 -> 100: the sub 60 % louder", fabs(level_at(buf, S, 87.307 / 2.0) / h0 - 1.6) < 0.08);
+    fx.bypass = 0;
+
+    cur.p[P_CAB] = 1;                            /* the loudest settings: the hump and a full chord */
+    cur.p[P_LEVEL] = 100;
+    tap_key(4); tap_key(7); tap_key(12);
+    host_render(buf, S); host_render(buf, S);
+    check("full chord, LEVEL 100, 4x12: below full scale (no hard clip at the end)", peak(buf, S) < 32767);
+    snd.silence_req = 1;                         /* release (0 s) */
+    host_render(buf, BLOCKS(FX_IDLE) + 512u);
+    host_render(buf, 2048);
+    check("released: exact silence once the chain went idle (no hum, no limit cycle)", peak(buf, 2048) == 0 &&
+          fx.idle >= FX_IDLE);
+    tap_key(0);
+    host_render(buf, 256);
+    check("a new note after the idle: sounds at once", peak(buf, 256) > 1000);
+    app_audio_stop();
+    host_render(buf, 64);
+}
+
 int main(void)
 {
     if (system("mkdir -p build/shots"))
@@ -641,6 +755,7 @@ int main(void)
     persistence();
     sound();
     engine();
+    fx_chain();
     puts(failed ? "APP TEST FAILED" : "app test passed");
     return failed ? 1 : 0;
 }

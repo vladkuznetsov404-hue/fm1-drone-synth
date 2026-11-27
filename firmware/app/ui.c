@@ -43,7 +43,9 @@ static int ui_live(int32_t code)                 /* does this value reach the so
 {
     return code == P_ATTACK || code == P_RELEASE || code == C_G + G_CH || code == C_G + G_TRS ||
            code == C_G + G_VOL || code == P_BEATS || code == P_LAYERS || code == P_SUB || code == P_SUBOCT ||
-           code == P_CURVE;                     /* (milestone 2: the SAW engine) */
+           code == P_CURVE ||                   /* (milestone 2: the SAW engine) */
+           code == P_MASSA || code == P_DARK || code == P_DRIVE || code == P_TONE || code == P_CAB ||
+           code == P_LEVEL;                     /* (milestone 3: the fuzz, the cabinet, DARK) */
 }
 
 static int32_t cell(uint32_t page, uint32_t i)

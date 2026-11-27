@@ -85,9 +85,12 @@ Each page draws only what changed (the platform's lazy drawing).
     when a note starts or a tuning value changes, never per sample.
   - **FM** engine: 2-operator voices with operator feedback (feedback = a dirty saw-like tone), 1..2 detuned copies,
     plus the sine sub. The DX7 engine of the stock firmware is not used.
-- A shared chain after the voices: one-pole DC block → **fuzz** (asymmetric soft clip with a drive of up to ~40 dB,
-  tone tilt) → **4×12 cabinet** (a fixed low-pass ~4.5 kHz + a resonant hump ~100–150 Hz + a dip ~500 Hz, as IIR
-  biquads) → low-pass (DARK) → level → the cassette.
+- A shared chain after the voices (milestone 3, built: `fx.c`, integer): DC block → **fuzz** (gain up to 48 dB:
+  FUZZ DRIVE and MASSA add up to 25 dB each; an asymmetric cubic soft clip, +1.0 / −0.8) → DC block → **tone**
+  (a ~1 kHz one-pole, the rest mixed back in by FUZZ TONE) → **LEVEL** → **cabinet** (off; 4×12: a 4th-order
+  low-pass at 4.2 kHz and +5 dB at 110 Hz; 4×12 dark: 2.3 kHz and +6 dB at 100 Hz; three biquads) → **DARK** (two
+  one-poles, 12 dB/oct, 12 kHz at 0 down to 150 Hz at 100, even steps in pitch) → the cassette. MASSA also lifts the
+  sub by up to 60 %. After ~0.19 s of silent voices the chain is cleared and outputs exact zero.
 - **Breath**: three slow LFOs at unrelated rates (cutoff, pitch ±few cents, level ±1.5 dB), depth from BREATH.
 - **Swell / release**: per-note amplitude ramps (attack 0..10 s, release 0..20 s, at least ~6 ms); no clicks on
   start, steal or stop. A stolen voice keeps its phase and level and changes pitch, then swells from there. A key or

@@ -4,6 +4,7 @@
 /* MASSA: a latching drone synthesizer (docs/SPEC.md). This file holds the five hooks of the contract (app.h) and
  * includes the parts in dependency order:
  *   data.c   the values of a sound and of the settings, their text, the two records in flash
+ *   fx.c     the chain after the voices (audio ISR): the fuzz, the cabinet, DARK, MASSA's drive
  *   sound.c  the audio ISR: the latch, the voices, MIDI in
  *   tape.c   the cassette's transport (main loop; its audio comes in a milestone)
  *   ui.c     the pages, the SAVE dialog, the controls, the LEDs */
@@ -17,6 +18,7 @@
                                   * drew one), so another firmware's data in the same flash reads as empty */
 
 #include "data.c"
+#include "fx.c"
 #include "sound.c"
 #include "tape.c"
 #include "ui.c"

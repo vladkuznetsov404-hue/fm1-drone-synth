@@ -2,8 +2,9 @@
  * Copyright (C) 2026 Vlad Kuznetsov */
 /* The sound (audio ISR): the latch and four voices of the SAW drone engine (milestone 2 of docs/SPEC.md): per note
  * 1..3 band-limited saws detuned by BEATS (SPREAD CURVE shapes the knob) and a sine sub one or two octaves down, with
- * the swell and release of the sound's ENV values and the master volume. The fuzz, the cabinet, DARK, BREATH, the FM
- * engine and the cassette come in the later milestones; the latch and its rules are final here.
+ * the swell and release of the sound's ENV values and the master volume, into the chain of fx.c (the fuzz, the
+ * cabinet, DARK). BREATH, the FM engine and the cassette come in the later milestones; the latch and its rules are
+ * final here.
  *
  * The latch: a key (or a MIDI note-on) whose note is not sounding starts it; the same note again releases it (the
  * release time); a note-off does nothing. At most NV notes: a fifth takes the oldest voice, which keeps its phase
@@ -23,7 +24,6 @@
 #define NOTE_KEY0 53u            /* note key 0 is F3 at octave 0 (hal/fm1_input.h fm1_in.notes) */
 #define VAMP 7000                /* one voice's peak with one layer and no sub, Q15: four at full sum to 28 000 */
 #define NL 3u                    /* layers per note at most */
-#define SUB_AMP 4500             /* the sub's peak at SUB LEVEL 100, Q15 */
 #define BEATS_CENTS 40           /* BEATS 100: the outer layers 40 cents off (spec: ~1 c .. ~40 c) */
 /* the saws' level per layer for 1, 2, 3 layers: detuned saws rarely line up, so their sum is louder than one saw by
  * about the square root of their number; these keep 2 and 3 layers near the loudness of one */
@@ -56,7 +56,7 @@ static struct {
     volatile uint8_t last_midi;  /* ISR -> screen: the last MIDI note-on taken (0: none yet) */
     uint32_t tune_sig;           /* the tuning values snd_tune last used (BEATS, CURVE, LAYERS, SUB OCTAVE) */
     int32_t off[NL];             /* the layers' detune, Q24 (an increment changes by inc * off >> 24) */
-    int32_t lamp, samp;          /* a layer's and the sub's level, Q15 */
+    int32_t lamp;                /* a layer's level, Q15 (the sub's: fx.samp, with MASSA's lift) */
     uint8_t layers, subsh;       /* layers sounding; the sub's octave shift */
 } snd;
 
@@ -96,7 +96,6 @@ static __attribute__((noinline)) void snd_spread(void)
     snd.off[1] = n == 2u ? -d / 2 : d;
     snd.off[2] = -d;
     snd.lamp = LAYER_AMP[n];
-    snd.samp = SUB_AMP * cur.p[P_SUB] / 100;
     snd.subsh = cur.p[P_SUBOCT] >= 2 ? 2u : 1u;
 }
 
@@ -235,10 +234,11 @@ static void snd_render(int32_t *out, uint32_t n)
         snd_requests();
     if (tune_sig() != snd.tune_sig)              /* (also the first block: the signature starts at 0, never valid) */
         snd_retune();
+    fx_check();
     for (j = 0; j < NV; j++) {
         voice_t *v = &snd.v[j];
         uint32_t nl = snd.layers, sph = v->sph, sinc = v->sinc, l;
-        int32_t g = v->gain, st = v->step, top = v->state == V_ON ? G_FULL : 0, lamp = snd.lamp, samp = snd.samp;
+        int32_t g = v->gain, st = v->step, top = v->state == V_ON ? G_FULL : 0, lamp = snd.lamp, samp = fx.samp;
         if (v->state == V_OFF)
             continue;
         for (i = 0; i < n; i++) {
@@ -270,6 +270,9 @@ static void snd_render(int32_t *out, uint32_t n)
         if (v->state == V_REL && g == 0)
             v->state = V_OFF;
     }
+    for (j = 0; j < NV && snd.v[j].state == V_OFF; j++)
+        ;
+    fx_process(out, n, j < NV);                  /* the fuzz, the cabinet, DARK (fx.c) */
     for (i = 0; i < n; i++) {
         int32_t s = out[2u * i] * vol >> 8;
         s = s > 32767 ? 32767 : s < -32767 ? -32767 : s;
