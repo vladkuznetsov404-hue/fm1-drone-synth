@@ -433,6 +433,8 @@ static void sound(void)
     host_render(buf, 1024);
     check("silence with nothing latched", peak(buf, 1024) == 0);
     set.g[G_OCT] = 0;                            /* key 0 = F3, 174.61 Hz */
+    cur.p[P_LAYERS] = 1;                         /* one plain saw: the latch, the envelope (engine() has the rest) */
+    cur.p[P_SUB] = 0;
 
     cur.p[P_ATTACK] = 0;                         /* the shortest swell: ~6 ms, still no click */
     fm1_in.notes = 1u;
@@ -467,10 +469,23 @@ static void sound(void)
     tap_key(0); tap_key(3); tap_key(7); tap_key(10);
     host_render(buf, S);
     check("four notes: summed, never past full scale", peak(buf, S) > VAMP && peak(buf, S) <= 32767);
-    tap_key(12);
-    host_render(buf, 64);
-    check("a fifth note steals, still four", n_held() == 4u && is_held(65));
-    check("the steal keeps the stolen voice's level (no restart from silence)", peak(buf, 64) > VAMP);
+    {   /* a fifth: the oldest voice (F3) fades in 10 ms, then the new note swells from silence */
+        voice_t *v = &snd.v[0];
+        cur.p[P_ATTACK] = 20;
+        tap_key(12);                             /* (64 frames, 1.5 ms) */
+        check("a fifth note: still four latched, the new one shown", n_held() == 4u && is_held(65) && !is_held(53));
+        check("the stolen voice fades (V_STEAL, 0.7 .. 0.95 of full after 1.5 ms)", v->state == V_STEAL &&
+              v->note == 53u && v->gain > G_FULL * 7 / 10 && v->gain < G_FULL * 95 / 100);
+        host_render(buf, 512);                   /* 13 ms in all */
+        check("after 10 ms: the new note, swelling from silence (no jump to full)", v->state == V_ON &&
+              v->note == 65u && v->gain > 0 && v->gain < G_FULL / 100);
+        tap_key(12);
+        check("the new note tapped again: released", !is_held(65) && v->state == V_REL);
+        tap_key(12);
+        check("and again while releasing: swells back in the same voice", is_held(65) && v->state == V_ON &&
+              v->note == 65u);
+        cur.p[P_ATTACK] = 0;
+    }
     cur.p[P_RELEASE] = 0;
     snd.silence_req = 1;
     host_render(buf, 2048);
@@ -518,6 +533,141 @@ static void sound(void)
     check("app_audio_stop: silent at once, every note forgotten", peak(buf, 1024) == 0 && n_held() == 0u);
 }
 
+/* ---------------------------------------------------------- the SAW engine --- */
+static double tone_amp(const int32_t *b, uint32_t frames, double f)   /* the amplitude of f (Goertzel, Hann) */
+{
+    double w = 2.0 * M_PI * f / FS, c = 2.0 * cos(w), s0, s1 = 0.0, s2 = 0.0, re, im;
+    uint32_t i;
+    for (i = 0; i < frames; i++) {
+        double hann = 0.5 - 0.5 * cos(2.0 * M_PI * i / frames);
+        s0 = b[2u * i] * hann + c * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    re = s1 - s2 * cos(w);
+    im = s2 * sin(w);
+    return 4.0 * sqrt(re * re + im * im) / frames;
+}
+
+static double rms(const int32_t *b, uint32_t frames)
+{
+    double a = 0.0;
+    uint32_t i;
+    for (i = 0; i < frames; i++)
+        a += (double)b[2u * i] * b[2u * i];
+    return sqrt(a / frames);
+}
+
+static void drone(uint32_t note)                 /* latch a MIDI note, let it settle, 1 s of it into buf, release */
+{
+    host_midi(0x90, note, 100);
+    host_render(buf, 8192);
+    host_render(buf, BLOCKS(FS));
+    host_midi(0x90, note, 100);
+    host_render(buf + 2u * (BLOCKS(FS) - 4096u), 4096);   /* (overwrites the last 4096 frames: measure before) */
+}
+
+static int near(double a, double want, double tol) { return fabs(a - want) <= want * tol; }
+
+static void engine(void)
+{
+    const uint32_t S = BLOCKS(FS), M = S - 4096u;   /* measured: the first M frames of drone()'s second */
+    const double OUT = (80 * 82 >> 5) / 256.0;     /* the master volume at its default */
+    const double SAW1 = VAMP * OUT * 2.0 / M_PI;   /* a saw's fundamental at one layer */
+    double a, b, c, r1;
+    uint32_t i, k;
+    host_nor_erase();
+    power_cycle();
+    cur.p[P_ATTACK] = 0;
+    cur.p[P_RELEASE] = 0;
+
+    cur.p[P_LAYERS] = 1;
+    cur.p[P_SUB] = 0;
+    drone(69);
+    a = tone_amp(buf, M, 440.0);
+    printf("  (1 layer, A4: %.0f at 440 Hz, want %.0f)\n", a, SAW1);
+    check("1 layer, no sub: A4's fundamental at the saw's level (+-5 %)", near(a, SAW1, 0.05));
+    check("1 layer, no sub: nothing an octave down", tone_amp(buf, M, 220.0) < SAW1 / 100.0);
+    r1 = rms(buf, M);
+
+    cur.p[P_SUB] = 100;
+    cur.p[P_SUBOCT] = 1;
+    drone(69);
+    a = tone_amp(buf, M, 220.0);
+    check("SUB 100, -1 OCT: a sine at 220 Hz at the voice level (+-5 %)", near(a, VAMP * OUT, 0.05));
+    b = tone_amp(buf, M, 660.0);
+    printf("  (sub sine: 3rd harmonic %.1f dB)\n", 20.0 * log10(b / a));
+    check("the sub is a clean sine: 3rd harmonic below -50 dB", b < a / 316.0);
+    cur.p[P_SUBOCT] = 2;
+    drone(69);
+    check("SUB 100, -2 OCT: at 110 Hz, none at 220 Hz", near(tone_amp(buf, M, 110.0), VAMP * OUT, 0.05) &&
+          tone_amp(buf, M, 220.0) < SAW1 / 100.0);
+    cur.p[P_SUB] = 0;
+
+    check("BEATS 0: 1 cent spread", spread_q8(0, 0) == 256 && spread_q8(0, 100) == 256);
+    check("BEATS 100: 40 cents (+-1 %), whatever the curve", abs(spread_q8(100, 0) - 40 * 256) < 103 &&
+          abs(spread_q8(100, 100) - 40 * 256) < 103);
+    check("BEATS 50, linear: 20.5 cents (+-2 %)", abs(spread_q8(50, 0) - 5248) < 105);
+    check("BEATS 50, cubic: 5.9 cents (+-3 %)", abs(spread_q8(50, 100) - 1504) < 45);
+    for (k = 0, i = 0; i < 100u; i++)            /* monotonic in BEATS at every curve */
+        for (c = 0; c <= 100; c += 25)
+            k += spread_q8((int32_t)i + 1, (int32_t)c) < spread_q8((int32_t)i, (int32_t)c);
+    check("the spread grows with BEATS at every curve", k == 0u);
+
+    cur.p[P_BEATS] = 100;
+    cur.p[P_CURVE] = 0;
+    cur.p[P_LAYERS] = 2;
+    drone(69);
+    a = tone_amp(buf, M, 440.0 * pow(2.0, 20.0 / 1200.0));
+    b = tone_amp(buf, M, 440.0 * pow(2.0, -20.0 / 1200.0));
+    c = tone_amp(buf, M, 440.0);
+    printf("  (2 layers, 40 c: %.0f at +20 c, %.0f at -20 c, %.0f at 0, want %.0f)\n", a, b, c, SAW1 / sqrt(2.0));
+    check("2 layers, BEATS 100: partials at +-20 cents, 1/sqrt 2 each (+-8 %)", near(a, SAW1 / sqrt(2.0), 0.08) &&
+          near(b, SAW1 / sqrt(2.0), 0.08));
+    check("2 layers, BEATS 100: nothing in tune between them", c < a / 10.0);
+    cur.p[P_LAYERS] = 3;
+    drone(69);
+    a = tone_amp(buf, M, 440.0 * pow(2.0, 20.0 / 1200.0));
+    b = tone_amp(buf, M, 440.0 * pow(2.0, -40.0 * 0.43 / 1200.0));
+    c = tone_amp(buf, M, 440.0);
+    printf("  (3 layers, 40 c: %.0f at +20 c, %.0f at -17.2 c, %.0f at 0, want %.0f)\n", a, b, c, SAW1 / sqrt(3.0));
+    check("3 layers, BEATS 100: 0, +20 and -17.2 cents, 1/sqrt 3 each (+-8 %)", near(a, SAW1 / sqrt(3.0), 0.08) &&
+          near(b, SAW1 / sqrt(3.0), 0.08) && near(c, SAW1 / sqrt(3.0), 0.08));
+    cur.p[P_BEATS] = 50;
+    drone(45);
+    printf("  (loudness: 3 layers / 1 layer = %.2f)\n", rms(buf, M) / r1);
+    check("3 detuned layers about as loud as one (0.8 .. 1.25 in RMS)", rms(buf, M) / r1 > 0.8 &&
+          rms(buf, M) / r1 < 1.25);
+
+    cur.p[P_LAYERS] = 1;                         /* polyBLEP: C8, the mirrored 6th .. 10th harmonics */
+    drone(108);
+    a = tone_amp(buf, M, 4186.009);
+    for (b = 0.0, k = 6; k <= 10u; k++) {
+        double f = 44100.0 - k * 4186.009;
+        f = f < 0.0 ? -f : f;
+        c = tone_amp(buf, M, f);
+        b = c > b ? c : b;
+    }
+    printf("  (C8: the strongest alias %.1f dB under the fundamental; a plain saw: -15.6 dB)\n", 20.0 * log10(b / a));
+    check("polyBLEP: the aliases of C8 at least 24 dB under the fundamental", b < a / 15.8);
+
+    cur.p[P_LAYERS] = 1;                         /* LAYERS turned while a note sounds: the new layers glide in */
+    host_midi(0x90, 57, 100);
+    host_render(buf, 4096);
+    cur.p[P_LAYERS] = 3;
+    host_render(buf, CTL);
+    for (k = 0; k < NV && snd.v[k].note != 57u; k++)
+        ;
+    check("LAYERS 1 -> 3: the new layers start near silence", k < NV && snd.v[k].lvl[1] > 0 &&
+          snd.v[k].lvl[1] <= LVL_STEP && snd.v[k].lvl[2] <= LVL_STEP);
+    host_render(buf, 70u * CTL);
+    check("... and reach their level in ~70 blocks (~50 ms)", snd.v[k].lvl[2] == snd.lvl_to[2] &&
+          snd.lvl_to[2] == VAMP * LAYER_GAIN[3] >> 15 && snd.v[k].lvl[0] == snd.lvl_to[0]);
+    host_midi(0x90, 57, 100);
+    host_render(buf, 2048);
+    check("released (layers and sub): exact silence", peak(buf + 2u * 1024u, 1024) == 0);
+}
+
 int main(void)
 {
     if (system("mkdir -p build/shots"))
@@ -526,6 +676,7 @@ int main(void)
     controls();
     persistence();
     sound();
+    engine();
     puts(failed ? "APP TEST FAILED" : "app test passed");
     return failed ? 1 : 0;
 }

@@ -14,7 +14,7 @@ The FM-1 has 27 keys, 14 buttons (FX SCL ENV LFO EDIT GLO HOME SAVE ARP SEQ PLAY
 
 | Control | Action | Effect |
 | --- | --- | --- |
-| Keys (27) | press | **Latch**: a key not sounding starts its note, which drones until the same key is pressed again (then it fades out with the release time). At most 4 notes at once; a 5th steals the oldest. |
+| Keys (27) | press | **Latch**: a key not sounding starts its note, which drones until the same key is pressed again (then it fades out with the release time). At most 4 notes at once; a 5th takes a free voice, else the oldest releasing, else the oldest held. |
 | OCT− / OCT+ | press | Octave of the keys, −3..+1 (default −2). LEDs as the platform does. |
 | OCT− + OCT+ | 5 s hold | Reserved (platform recovery). |
 | KNOB 1 | turn (HOME) | **MASSA** 0..100: drive of the fuzz + sub level + engine feedback, together. |
@@ -75,8 +75,17 @@ Each page draws only what changed (the platform's lazy drawing).
 
 - 44.1 kHz, mono engine into a stereo output (both channels the same in v1).
 - Up to **4 latched notes**. Per note:
-  - **SAW** engine: 1..3 band-limited saws detuned by BEATS (cents scale from ~1 c to ~40 c), plus a sine sub one or
-    two octaves down.
+  - **SAW** engine: 1..3 band-limited saws (polyBLEP; the aliases of C8 measure ~26 dB under the fundamental, a
+    plain saw's 15.6 dB) detuned by BEATS, plus a sine sub one or two octaves down (SUB LEVEL 0..100 = 0..the level
+    of one saw; its 3rd harmonic ~77 dB down).
+    - BEATS sets the spread between the outermost layers, 1 c (0) to 40 c (100). SPREAD CURVE bends the knob from
+      linear (0; BEATS 50 = 20.5 c) to cubic (100; BEATS 50 = 5.9 c: more travel for slow beating).
+    - Two layers sit at ±½ of the spread; three at 0, +½ and −0.43 of it (unequal: the two beat rates against the
+      middle layer differ, so the pattern does not repeat). Layers start at phases 0, ⅓, ⅔ (no common peak).
+    - Each layer at 1/√LAYERS: detuned saws add in power, so 1, 2 and 3 layers are about equally loud (measured
+      0.99). Layer and sub levels glide ~45 ms, so LAYERS and SUB LEVEL turn without clicks.
+    - Levels: one voice's single saw peaks at 6000 (Q15) before the volume; four 3-layer voices with the sub stay
+      under full scale in practice (the fuzz and the output level of milestone 3 take over the headroom).
   - **FM** engine: 2-operator voices with operator feedback (feedback = a dirty saw-like tone), 1..2 detuned copies,
     plus the sine sub. The DX7 engine of the stock firmware is not used.
 - A shared chain after the voices: one-pole DC block → **fuzz** (asymmetric soft clip with a drive of up to ~40 dB,
@@ -84,7 +93,7 @@ Each page draws only what changed (the platform's lazy drawing).
   biquads) → low-pass (DARK) → level → the cassette.
 - **Breath**: three slow LFOs at unrelated rates (cutoff, pitch ±few cents, level ±1.5 dB), depth from BREATH.
 - **Swell / release**: per-note amplitude ramps (attack 0..10 s, release 0..20 s, at least ~6 ms); no clicks on
-  start, steal or stop. A stolen voice keeps its phase and level and changes pitch, then swells from there. A key or
+  start, steal or stop. A stolen voice fades out in 10 ms, then the new note swells in from silence. A key or
   note-on whose note is still releasing swells that voice back up.
 - The MASSA macro maps 0..100 to: fuzz drive (main), sub level (+), engine feedback / FM index (+). The exact curves
   are tuned by ear in the emulator.
@@ -145,7 +154,8 @@ Step sequencer, arpeggiator, saving the tape, MIDI CC / clock / out, stereo effe
 1. **Skeleton** (done, v0.1): every control from the table does something visible; all pages drawn; four latched
    notes of one plain saw each, swell and release, volume, from keys and MIDI; SCL silence; the cassette's transport
    without audio; the settings and sound records with defaults, SAVE / load working.
-2. **SAW drone engine**: 4 latched notes, detuned layers + sub, BEATS, swell / release, steal without clicks.
+2. **SAW drone engine** (done): 4 latched notes, detuned layers + sub, BEATS, SPREAD CURVE, swell / release, a
+   stolen voice fading out in 10 ms before the new note swells in.
 3. **Fuzz + cabinet + DARK + MASSA macro**: tuned by ear in the emulator.
 4. **BREATH**: the slow LFOs.
 5. **FM engine** and the ALGORITHM crossfade; measure the ISR budget.
