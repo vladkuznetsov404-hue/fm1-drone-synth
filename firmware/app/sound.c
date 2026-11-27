@@ -94,6 +94,45 @@ static __attribute__((noinline)) void fm_update(void)   /* FEEDBACK (+ half of M
     snd.ix = (IX_MAX >> 15) * (uint32_t)cur.p[P_INDEX] / 100u;
 }
 
+/* HOME's picture of the drone: on request (the main loop, ~10 times a second) the ISR waits for a rising zero
+ * crossing of the output (or 4 096 samples: silence) and keeps every 4th sample of the next 960 (~22 ms: a period of
+ * F1, two of F2), as Q15 >> 4. The main loop draws it scaled to its own peak when ready is set and asks again later. */
+#define SCOPE_N 240u
+static struct {
+    volatile uint8_t req, ready; /* main loop -> ISR: capture; ISR -> main loop: done */
+    uint8_t armed, k;
+    uint16_t wait, n;
+    int32_t last;
+    uint32_t count;              /* captures drawn (the screen's signature) */
+    int16_t y[SCOPE_N];
+} scope;
+
+static __attribute__((noinline)) void scope_take(const int32_t *out, uint32_t n)
+{
+    uint32_t i;
+    for (i = 0; i < n && !scope.ready; i++) {
+        int32_t s = out[2u * i];
+        if (!scope.armed) {
+            if ((scope.last < 0 && s >= 0) || ++scope.wait >= 4096u) {
+                scope.armed = 1;
+                scope.n = scope.k = 0;
+                scope.wait = 0;
+            }
+            scope.last = s;
+            continue;
+        }
+        if (++scope.k == 4u) {
+            scope.k = 0;
+            scope.y[scope.n] = (int16_t)(s >> 4);
+            if (++scope.n == SCOPE_N) {
+                scope.armed = 0;
+                scope.req = 0;
+                scope.ready = 1;
+            }
+        }
+    }
+}
+
 static uint32_t note_inc(uint32_t n)             /* MIDI note -> phase increment */
 {
     uint32_t oct = n / 12u, inc = OCT4_INC[n % 12u];
@@ -353,4 +392,6 @@ static void snd_render(int32_t *out, uint32_t n)
         out[2u * i] = s;
         out[2u * i + 1u] = s;
     }
+    if (scope.req && !scope.ready)
+        scope_take(out, n);
 }

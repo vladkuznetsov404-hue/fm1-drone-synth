@@ -101,6 +101,7 @@ static void reset_state(void)                    /* the app's RAM as at power-on
     memset(&ui, 0, sizeof ui);
     memset(&snd, 0, sizeof snd);
     memset(snd.fm_last, 0xFF, sizeof snd.fm_last);
+    memset(&scope, 0, sizeof scope);
     memset(&fx, 0, sizeof fx);
     memset(fx.last, 0xFF, sizeof fx.last);       /* (-1: never updated, as at power-on) */
     fx.lmod = 32768;
@@ -925,6 +926,42 @@ static void fm(void)
     fx.bypass = 0;
 }
 
+/* HOME's picture of the drone (milestone 9): a wave drawn behind the notes ~10 times a second while on HOME; none
+ * asked for on the other pages. */
+static uint32_t wave_px(void)                    /* the wave's colour in the notes area, off its centre row */
+{
+    uint32_t x, y, n = 0;
+    for (y = 52; y < 98; y++)
+        for (x = 0; x < 240u; x++)
+            n += y != 75u && host_fb[y * 240u + x] == T_TINT;
+    return n;
+}
+
+static void scope_shot(void)
+{
+    uint32_t c0, ink0;
+    host_nor_erase();
+    power_cycle();
+    set.g[G_SLOT] = 1;
+    cur = bank.s[1];                             /* MONOLITH */
+    cur.p[P_ATTACK] = 0;
+    ui_page(PG_HOME);
+    run_frames(2);
+    ink0 = wave_px();                            /* silence: a flat line on the centre row only */
+    tap_key(0); tap_key(7);
+    c0 = scope.count;
+    run_frames(60);                              /* ~1 s */
+    check("HOME: pictures of the drone, ~10 a second", scope.count - c0 >= 7u && scope.count - c0 <= 12u);
+    check("HOME: silence a flat line; a drone a wave across the notes area", ink0 < 10u && wave_px() > 200u);
+    host_png("build/shots/home_drone.png");
+    press(B_FX);
+    c0 = scope.count;
+    run_frames(30);
+    check("other pages: no pictures asked for", scope.count - c0 <= 1u);
+    app_audio_stop();
+    host_render(buf, 64);
+}
+
 /* The factory sounds (milestone 8): sixteen names, every value in its range, each one droning (a chord through the
  * whole chain) without silence and within full scale. */
 static void factory(void)
@@ -1142,6 +1179,7 @@ int main(void)
     breath();
     fm();
     factory();
+    scope_shot();
     tape_audio();
     puts(failed ? "APP TEST FAILED" : "app test passed");
     return failed ? 1 : 0;

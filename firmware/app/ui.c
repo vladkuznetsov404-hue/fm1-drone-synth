@@ -4,7 +4,8 @@
  *
  * Every page is the same frame: a header (page, engine, octave), the sound line (slot, name, * when edited; a
  * short message in its place for 1.5 s), four rows for KNOB 1..4 (label, value, a bar), and the held notes and the
- * tape. HOME puts the held notes large and the tape with its bar above four compact macro rows. A value that does
+ * tape. HOME puts the held notes large over a picture of the drone's wave (~10 a second, sound.c's scope) and the
+ * tape with its bar above four compact macro rows. A value that does
  * not reach the sound yet carries a dim SOON next to its label (ui_live); a milestone that wires one removes it.
  *
  * Lazy drawing: each area has a signature of what it shows (area_sig) and is drawn only when that changes; a page
@@ -36,6 +37,7 @@ static struct {
     uint32_t last_buttons, rec_down, toast_until;
     uint8_t rec_held, rec_used;
     const char *toast;
+    uint32_t scope_t;            /* when the last picture of the drone was shown (fm1_ms) */
     uint32_t drawn[NA], dlg_drawn;
 } ui;
 
@@ -118,6 +120,8 @@ static uint32_t area_sig(uint32_t a)
         h = h_add(h, held_sig());
         if (ui.page != PG_HOME)
             h = h_add(h, tape.st);
+        else
+            h = h_add(h, scope.count);           /* a new picture of the drone */
         break;
     case A_TAPE:
         h = h_add(h, tape.st);
@@ -220,6 +224,19 @@ static void draw_notes_big(uint32_t y)           /* HOME: the held notes, large 
     uint32_t i;
     held_notes(n);
     cv_begin(240, 50, T_BG);
+    if (scope.count) {                           /* the drone's wave behind the notes, scaled to +-22 px of its peak */
+        int32_t m = 64, a, y0 = 25, y1;
+        for (i = 0; i < SCOPE_N; i++) {
+            a = scope.y[i] < 0 ? -scope.y[i] : scope.y[i];
+            m = a > m ? a : m;
+        }
+        for (i = 0; i < SCOPE_N; i++) {
+            y1 = 25 - scope.y[i] * 22 / m;
+            if (i)
+                cv_line((int32_t)i - 1, y0, (int32_t)i, y1, T_TINT);
+            y0 = y1;
+        }
+    }
     for (i = 0; i < NV; i++) {
         const aafont_t *f = &AF_L;
         if (!n[i]) {
@@ -404,6 +421,12 @@ static void ui_frame(void)
     for (i = 0; i < 4u; i++)
         k[i] = panel_enc(EN_K1 + i);
     tape_frame();
+    if (scope.ready) {                           /* a picture taken: show it, ask for the next in ~100 ms */
+        scope.count++;
+        scope.ready = 0;
+        ui.scope_t = fm1_ms;
+    } else if (ui.page == PG_HOME && !scope.req && fm1_ms - ui.scope_t >= 100u)
+        scope.req = 1;
 
     if (ui.dlg) {                                /* the SAVE dialog takes SAVE / OCT+, OCT-, PRESETS */
         if (pre)

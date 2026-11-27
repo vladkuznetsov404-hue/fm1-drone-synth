@@ -54,9 +54,11 @@ Every page has the same frame: a header (page name; engine and octave on the rig
 for 1.5 s), four rows for KNOB 1..4 (number, label, value, a bar), and a footer with the latched notes and the tape's
 state. A value that does not reach the sound yet carries a dim SOON next to its label.
 
-- **HOME**: header and sound line; the latched notes large (four columns); the cassette's state (EMPTY, REC, PLAY,
-  DUB, STOP) with the loop position as a bar; the four macro knobs MASSA, BEATS, DARK, BREATH as compact rows. The
-  live picture of the drone (waveform or slow spectrum) is milestone 9; it will take the notes' place or share it.
+- **HOME**: header and sound line; the latched notes large (four columns) over a live picture of the drone (built,
+  milestone 9): ~10 times a second the ISR captures ~22 ms of the output from a rising zero crossing (every 4th
+  sample, 240 points) and the screen draws it in the tint colour, scaled to its own peak, behind the note names;
+  only while HOME is shown. The cassette's state (EMPTY, REC, PLAY, DUB, STOP) with the loop position as a bar; the
+  four macro knobs MASSA, BEATS, DARK, BREATH as compact rows.
 - **EDIT** (engine): SAW: layers per note (1..3), sub level, sub octave (−1/−2), spread curve. FM: ratio, feedback,
   index, sub level.
 - **FX**: fuzz drive, fuzz tone, cabinet (off / 4×12 / 4×12 dark), output level.
