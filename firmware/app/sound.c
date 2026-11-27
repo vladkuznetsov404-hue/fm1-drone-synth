@@ -70,7 +70,7 @@ typedef struct {
     uint32_t sph, sinc;          /* the sub */
     uint32_t mph[FM_NL];         /* FM: the modulators' phases (the carriers use ph[]) */
     int32_t c1[FM_NL], c2[FM_NL];   /* FM: the carriers' last two outputs (their feedback is the average) */
-    uint32_t base, age;          /* base: the note's increment; age: when it started (snd.clock), the oldest is stolen */
+    uint32_t base, tgt, age;     /* base: the note's increment, gliding to tgt; age: when it started (snd.clock), the oldest is stolen */
     int32_t gain, step;          /* Q24; step per sample, + while rising, - while falling */
     uint8_t note, state, src;
 } voice_t;
@@ -87,10 +87,12 @@ static struct {
     int32_t off[NL];             /* the layers' detune, Q24 (an increment changes by inc * off >> 24) */
     int32_t lamp;                /* a layer's level, Q15 (the sub's: fx.samp, with MASSA's lift) */
     uint8_t layers, subsh;       /* layers sounding; the sub's octave shift */
+    int16_t croot;               /* the key's note whose chord is latched (-1: none: the keys are single notes) */
+    uint8_t chsig;               /* CHORD and LOW ROOT as last seen: a change re-voices the sounding chord */
     int32_t xf;                  /* the crossfade: 0 SAW .. 32 768 FM, Q15 */
     uint32_t fbk, ix, ratio;     /* FM: the feedback and the index as phase per unit (>> 15 applied), the ratio */
     int16_t fm_last[3];          /* the values fm_update last used: FEEDBACK, INDEX, MASSA (-1 never) */
-} snd = {.fm_last = {-1, -1, -1}};
+} snd = {.fm_last = {-1, -1, -1}, .croot = -1, .chsig = 0xFFu};
 
 static __attribute__((noinline)) void fm_update(void)   /* FEEDBACK (+ half of MASSA) and INDEX -> phase amounts */
 {
@@ -280,12 +282,99 @@ static __attribute__((noinline)) void snd_toggle(uint32_t note, uint32_t src)   
     snd_start(note, src);
 }
 
+/* A note that moves to another (a chord changing, a note stolen) glides there instead of jumping: its increment follows
+ * the target with a one-pole, the time constant SLIDE (tenths of a second; 0 = at once), a step a block. The phases
+ * carry on, so there is no click; the layers' tuning is worked out again each block while it moves. */
+static __attribute__((noinline)) void snd_glide(uint32_t n)
+{
+    uint32_t i, slide = (uint32_t)set.g[G_SLIDE];
+    uint64_t k = slide ? (uint64_t)n * 3804u / slide : 1u << 24;   /* Q24: n / (SLIDE x 4410 samples) */
+    for (i = 0; i < NV; i++) {
+        voice_t *v = &snd.v[i];
+        int64_t d;
+        if (v->state == V_OFF || v->tgt == v->base)
+            continue;
+        d = (int64_t)v->tgt - (int64_t)v->base;
+        if (k >= (1u << 24) || (d < 0 ? -d : d) < (int64_t)(v->base >> 12))
+            v->base = v->tgt;
+        else
+            v->base = (uint32_t)((int64_t)v->base + (d * (int64_t)k >> 24));
+        snd_tune(v);
+    }
+}
+
+static __attribute__((noinline)) void snd_morph(int32_t root, uint32_t src)   /* this root's chord takes over the sounding one */
+{
+    int32_t raw[NV], notes[NV], nn = 0, m = 0, i, j, r;
+    uint32_t idx[NV], nr = chord_notes(root, raw);
+    for (i = 0; i < (int32_t)nr; i++)            /* the new notes, in range, lowest first */
+        if (raw[i] >= 0 && raw[i] <= 127) {
+            for (j = nn++; j > 0 && notes[j - 1] > raw[i]; j--)
+                notes[j] = notes[j - 1];
+            notes[j] = raw[i];
+        }
+    for (i = 0; i < (int32_t)NV; i++)            /* the sounding voices, lowest note first */
+        if (snd.v[i].state == V_ON) {
+            for (j = m++; j > 0 && snd.v[idx[j - 1]].note > snd.v[i].note; j--)
+                idx[j] = idx[j - 1];
+            idx[j] = (uint32_t)i;
+        }
+    for (r = 0; r < m && r < nn; r++) {          /* the lowest to the lowest: each glides to its note */
+        voice_t *v = &snd.v[idx[r]];
+        if (v->note != (uint8_t)notes[r]) {
+            v->note = (uint8_t)notes[r];
+            v->tgt = note_inc((uint32_t)notes[r]);
+            snd.held[idx[r]] = (uint8_t)notes[r];
+        }
+    }
+    for (r = nn; r < m; r++)                     /* a smaller chord: the highest go */
+        snd_stop_voice(idx[r]);
+    for (r = m; r < nn; r++)                     /* a bigger one: the new notes swell in */
+        snd_start((uint32_t)notes[r], src);
+}
+
+static __attribute__((noinline)) uint32_t snd_any_on(void)
+{
+    uint32_t j, on = 0;
+    for (j = 0; j < NV; j++)
+        on |= snd.v[j].state == V_ON;
+    return on;
+}
+
+static __attribute__((noinline)) void snd_chord_watch(void)   /* CHORD or LOW ROOT turned while a chord sounds: it changes */
+{
+    uint8_t sig = (uint8_t)(set.g[G_CHORD] | set.g[G_LOW] << 4);
+    if (sig == snd.chsig)
+        return;
+    snd.chsig = sig;
+    if (snd.croot >= 0 && snd_any_on())
+        snd_morph(snd.croot, SRC_KEY);
+}
+
 static __attribute__((noinline)) void snd_press(int32_t root, uint32_t src)   /* a key: its chord, latched as a whole */
 {
     int32_t notes[NV];
     uint32_t n = chord_notes(root, notes), i, j, on = 0;
     if (root < 0 || root > 127)
         return;
+    if (set.g[G_CHORD] > 0 || set.g[G_LOW] > 0) {   /* chords: the same key again ends it, another key takes the sound over */
+        if (snd.croot == root && snd_any_on()) {
+            for (j = 0; j < NV; j++)
+                if (snd.v[j].state == V_ON)
+                    snd_stop_voice(j);
+            snd.croot = -1;
+        } else if (snd_any_on()) {
+            snd_morph(root, src);
+            snd.croot = (int16_t)root;
+        } else {
+            for (i = 0; i < n; i++)
+                if (notes[i] >= 0 && notes[i] <= 127)
+                    snd_start((uint32_t)notes[i], src);
+            snd.croot = (int16_t)root;
+        }
+        return;
+    }
+    snd.croot = -1;
     for (j = 0; j < NV; j++)
         on |= snd.v[j].state == V_ON && snd.v[j].note == root;
     for (i = 0; i < n; i++) {
@@ -340,7 +429,9 @@ static __attribute__((noinline)) void snd_start(uint32_t note, uint32_t src)   /
         v->c1[0] = v->c1[1] = v->c2[0] = v->c2[1] = 0;
     }
     v->note = (uint8_t)note;
-    v->base = note_inc(note);
+    v->tgt = note_inc(note);
+    if (v->state == V_OFF || !set.g[G_SLIDE])    /* (a stolen voice glides to its new note) */
+        v->base = v->tgt;
     snd_tune(v);
     v->src = (uint8_t)src;
     v->state = V_ON;
@@ -380,6 +471,7 @@ static __attribute__((noinline)) void snd_requests(void)
     if (snd.stop_req) {
         snd.stop_req = 0;
         snd.silence_req = 0;
+        snd.croot = -1;
         for (i = 0; i < NV; i++) {
             snd.v[i].state = V_OFF;
             snd.v[i].gain = 0;
@@ -388,6 +480,7 @@ static __attribute__((noinline)) void snd_requests(void)
     }
     if (snd.silence_req) {
         snd.silence_req = 0;
+        snd.croot = -1;
         for (i = 0; i < NV; i++)
             if (snd.v[i].state == V_ON) {
                 snd.v[i].state = V_REL;
@@ -408,6 +501,8 @@ static void snd_render(int32_t *out, uint32_t n)
     snd.last_keys = fm1_in.notes;                /* (the real keys: one pressed as a pad makes no note when SEQ is let go) */
     while (midi_in_take(&pkt, &src))
         snd_midi(pkt, src);
+    snd_chord_watch();
+    snd_glide(n);
     if (snd.stop_req | snd.silence_req)          /* after the queue: what came before a stop is forgotten too */
         snd_requests();
     if (tune_sig() != snd.tune_sig)              /* (also the first block: the signature starts at 0, never valid) */

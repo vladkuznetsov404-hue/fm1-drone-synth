@@ -7,23 +7,8 @@
  * The black hole is the drone: its ring is the scope of what comes out wrapped round a circle (the wave is the
  * ring's radius), the stars are pulled outwards the way a lens does it, with a strength that follows the level and
  * MASSA (the hole's size), BREATH sets how fast the whole thing breathes, DARK how far its halos reach. In SHOEGAZE
- * it is not dark at all: a core of light with halos in place of the shadow. */
-static const int8_t C120[120] = {
-    127, 127, 126, 125, 124, 123, 121, 119, 116, 113, 110, 107, 103, 99, 94, 90, 85, 80, 75, 69,
-    64, 58, 52, 46, 39, 33, 26, 20, 13, 7, 0, -7, -13, -20, -26, -33, -39, -46, -52, -58,
-    -63, -69, -75, -80, -85, -90, -94, -99, -103, -107, -110, -113, -116, -119, -121, -123, -124, -125, -126, -127,
-    -127, -127, -126, -125, -124, -123, -121, -119, -116, -113, -110, -107, -103, -99, -94, -90, -85, -80, -75, -69,
-    -64, -58, -52, -46, -39, -33, -26, -20, -13, -7, 0, 7, 13, 20, 26, 33, 39, 46, 52, 58,
-    64, 69, 75, 80, 85, 90, 94, 99, 103, 107, 110, 113, 116, 119, 121, 123, 124, 125, 126, 127,
-};
-static int32_t cs(int32_t i) { return C120[(i % 120 + 120) % 120]; }          /* cos of i x 3 degrees, x 127 */
-static int32_t sn(int32_t i) { return C120[((i + 90) % 120 + 120) % 120]; }   /* sin */
-
+ * the hole is a quasar (sc_quasar), in the same sky. */
 static const int8_t STARS[32][2] = {{-98, -29}, {-88, -6}, {-98, 22}, {-94, 38}, {-77, -30}, {-67, 0}, {-63, 11}, {-79, 46}, {-43, -42}, {-50, -3}, {-30, 26}, {-51, 51}, {-10, -32}, {-2, -1}, {-2, 11}, {-3, 32}, {24, -44}, {9, -19}, {14, 13}, {27, 32}, {62, -32}, {48, -6}, {56, 12}, {54, 39}, {88, -37}, {83, -20}, {89, 8}, {82, 52}, {106, -33}, {115, -18}, {120, 14}, {108, 39}};
-
-static struct {
-    uint32_t t, cph;             /* the cassette: when it was drawn, the reels' angle (Q8 of 3 degrees) */
-} sc2;
 
 static int32_t sc_scope_max(void)                /* the scope's peak (at least 64) */
 {
@@ -38,7 +23,41 @@ static int32_t sc_scope_max(void)                /* the scope's peak (at least 6
 
 static uint16_t sc_hot(int32_t lev)              /* the ring's colour: the theme, the accent when it is loud */
 {
-    return set.g[G_MODE] == MODE_SHOE || lev > 200 ? T_ACCENT : T_THEME;
+    return lev > 200 ? T_ACCENT : T_THEME;
+}
+
+/* the quasar (SHOEGAZE's HOME): a bright core, a thin accretion disc seen nearly edge on (its left side, the one
+ * coming at us, brighter and thicker, the rim rippling with the wave) and two jets along the axis that whip about
+ * with the sound: DARK widens the disc, MASSA lengthens the jets, the level flares the core */
+static void sc_quasar(int32_t cx, int32_t cy, int32_t rs, int32_t lev, int32_t t, int32_t dark, int32_t mas, int32_t m)
+{
+    int32_t i, j, k, dir, len = 26 + mas * 12 / 100 + lev / 16, rx = 40 + dark / 3 + lev / 20, ry = rx / 6 + 2, px, py, x0 = 0, y0 = 0;
+    static const uint8_t SH[3] = {100, 78, 56};
+    for (k = 0; k < 3; k++) {                    /* the disc: three bands, dim outside to hot inside */
+        uint16_t c = k == 0 ? T_DIM : k == 1 ? T_THEME : T_ACCENT;
+        for (i = 0; i <= 60; i++) {
+            int32_t a = i * 2, w = scope.y[(uint32_t)(i * 4 + k * 9) % SCOPE_N] * 3 / m;
+            px = cx + rx * SH[k] / 100 * cs(a) / 127;
+            py = cy - ry * SH[k] / 100 * sn(a) / 127 + w;
+            if (i)
+                cv_line_t(x0, y0, px, py, c, cs(a) < 0 ? 2 : 1);
+            x0 = px;
+            y0 = py;
+        }
+    }
+    for (dir = -1; dir <= 1; dir += 2)           /* the jets: they widen away from the core and cool */
+        for (j = 0; j < len; j += 2) {
+            int32_t wob = scope.y[(uint32_t)(j * 3 + t * 2 + (dir > 0 ? 60 : 0)) % SCOPE_N] * (3 + lev / 30) * j / (len * m), w = 2 + j / 8;
+            uint16_t c = j < len / 3 ? T_ACCENT : j < len * 2 / 3 ? T_THEME : T_MID;
+            cv_rect(cx + wob - w / 2, dir < 0 ? cy - rs - j - 2 : cy + rs + j, w, 2, c);
+        }
+    sc_disc(cx, cy, rs + 4 + lev / 40, T_TINT);  /* the core: a glow, a hot disc, a white heart */
+    sc_disc(cx, cy, rs + 1, T_THEME);
+    sc_disc(cx, cy, rs - 1, T_TEXT);
+    if (lev > 140) {                             /* a flare: the cross of light */
+        cv_rect(cx - rs - 10, cy, 2 * (rs + 10), 1, T_TEXT);
+        cv_rect(cx, cy - rs - 6, 1, 2 * (rs + 6), T_TEXT);
+    }
 }
 
 static void sc_hole(uint32_t y)                  /* HOME: 240 x 104 */
@@ -67,27 +86,21 @@ static void sc_hole(uint32_t y)                  /* HOME: 240 x 104 */
         } else
             cv_rect(px, py, big ? 2 : 1, big ? 2 : 1, c);
     }
-    if (shoe) {                                  /* a core of light */
-        sc_disc(cx, cy, R + 12 + dark / 12, T_TINT);
-        sc_disc(cx, cy, R + 7, T_RAISE);
-        sc_disc(cx, cy, R + 3, T_THEME);
-    } else {                                     /* halos: they reach further with DARK and open with the level */
-        for (k = 0; k < 3; k++)
+    if (shoe)
+        sc_quasar(cx, cy, rs * 2 / 3, lev, t, dark, mas, m);
+    else {
+        for (k = 0; k < 3; k++)                  /* halos: they reach further with DARK and open with the level */
             if (lev > 20 + 40 * k || k == 0)
                 sc_ring(cx, cy, R + 7 + 7 * k + pul * (k + 1) / 127 + dark / 25, k == 0 ? T_LINE : T_TINT);
-    }
-    for (i = 0; i <= 120; i++) {                 /* the ring: the wave, round */
-        int32_t j = i % 120, r = R + scope.y[(uint32_t)(j * 2) % SCOPE_N] * A / m;
-        px = cx + r * cs(j) / 127;
-        py = cy - r * sn(j) / 127;
-        if (i)
-            cv_line_t(x0, y0, px, py, sc_hot(lev), 2);
-        x0 = px;
-        y0 = py;
-    }
-    if (shoe)
-        sc_disc(cx, cy, rs - 2, T_TEXT);         /* the core */
-    else {
+        for (i = 0; i <= 120; i++) {             /* the ring: the wave, round */
+            int32_t j = i % 120, r = R + scope.y[(uint32_t)(j * 2) % SCOPE_N] * A / m;
+            px = cx + r * cs(j) / 127;
+            py = cy - r * sn(j) / 127;
+            if (i)
+                cv_line_t(x0, y0, px, py, sc_hot(lev), 2);
+            x0 = px;
+            y0 = py;
+        }
         sc_ring(cx, cy, rs + 1, T_TEXT);         /* the photon ring, then the shadow */
         sc_disc(cx, cy, rs, T_BG);
     }
@@ -103,7 +116,7 @@ static void sc_hole(uint32_t y)                  /* HOME: 240 x 104 */
     cv_blit(0, y);
 }
 
-/* ---- the cassette (TAPE) ---- */
+/* ---- the slice of time (TAPE): the loop round a ring, the head sweeping it ---- */
 static uint16_t tape_col(void)
 {
     return tape.st == TP_REC || tape.st == TP_DUB ? T_REC : tape.st == TP_PLAY ? T_THEME : T_MID;
@@ -111,24 +124,49 @@ static uint16_t tape_col(void)
 
 static void sc_cassette(uint32_t y)              /* 240 x 124 */
 {
-    int32_t pct = tape.st == TP_EMPTY ? 50 : (int32_t)tape_pct(), spd = (int32_t)tape.spd_pub, dt, k, rl, rr, sem;
-    int32_t rev = (set.g[G_DIR] != 0) != ((tape.pads >> PD_REV & 1u) != 0u), lc = 86, rc = 154, cy = 74;
+    int32_t cx = 62, cy = 62, rb = 30, i, k, n = (int32_t)tape.n_pub, ip = (int32_t)tape.ip_pub, tot, h, sem, spd = (int32_t)tape.spd_pub;
+    int32_t cut = (tape.pads & (7u << PD_ST8)) != 0u, s0 = (int32_t)tape.sip, s1 = (int32_t)(tape.sip + tape.slen), step;
     char b[24], v[16];
-    dt = (int32_t)(fm1_ms - sc2.t);
-    dt = dt < 0 || dt > 200 || !sc2.t ? 70 : dt;
-    sc2.t = fm1_ms;
-    sc2.cph += (uint32_t)(dt * (spd >> 4) / 160);              /* the reels turn with the speed (1x: ~1 turn a second) */
-    rl = 11 + (100 - pct) * 13 / 100;
-    rr = 11 + pct * 13 / 100;
     cv_begin(240, 124, T_BG);
-    cv_rrect(14, 2, 212, 118, 8, T_SURF, T_BG);                /* the cassette, its label and its window */
-    cv_rrect(26, 8, 188, 38, 4, T_BG, T_SURF);
-    cv_rrect(52, 50, 136, 62, 10, T_BG, T_SURF);
-    cv_text(34, 12, &AF_M, TP_NAME[tape.st], tape_col());
-    num(b, (int32_t)tape.pos / 100);                           /* the position / the length, in seconds and tenths */
-    str_cpy(v, b, sizeof v);
-    if (tape.len) {
-        str_cpy(b, "", sizeof b);
+    tot = tape.st == TP_REC ? (int32_t)TAPE_N : n;             /* a loop in the making is drawn against the longest one */
+    h = tot ? (int32_t)((int64_t)ip * 120 / tot) : 0;
+    step = tot > 120 ? tot / 120 : 1;
+    sc_ring(cx, cy, rb - 3, T_LINE);                           /* the slice of time: the loop round a ring, its sound standing on it */
+    for (i = 0; i < 120; i++) {
+        int32_t a = 30 - i, c0 = i * step, lv = 0, len, d = (h - i + 120) % 120;
+        uint16_t col;
+        if (n && c0 < n) {
+            for (k = 0; k < 3; k++) {
+                int32_t c = tape_cells[(c0 + step * k / 3) % TAPE_N];
+                c = c < 0 ? -c : c;
+                lv = c > lv ? c : lv;
+            }
+            len = 2 + lv * 13 / 127;
+            col = cut && c0 + step > s0 && c0 < s1 ? T_ACCENT : d < 12 ? T_THEME : T_MID;
+            if (cut && c0 + step > s0 && c0 < s1)
+                len += 4;
+        } else {
+            len = 1;
+            col = T_DIM;
+        }
+        cv_line_t(cx + (rb * cs(a) >> 7), cy - (rb * sn(a) >> 7), cx + ((rb + len) * cs(a) >> 7), cy - ((rb + len) * sn(a) >> 7), col, 2);
+    }
+    if (cut && tot) {                                          /* the slice itself: a wedge cut out of the ring */
+        for (k = 0; k < 2; k++) {
+            int32_t a = 30 - (int32_t)((int64_t)(k ? s1 : s0) % tot * 120 / tot);
+            cv_line_t(cx + (12 * cs(a) >> 7), cy - (12 * sn(a) >> 7), cx + (52 * cs(a) >> 7), cy - (52 * sn(a) >> 7), T_ACCENT, 1);
+        }
+    }
+    sc_disc(cx, cy, 10, T_TINT);                               /* the singularity in the middle, the head sweeping over the ring */
+    sc_disc(cx, cy, 4, tape_col());
+    if (tot) {
+        int32_t a = 30 - h;
+        cv_line_t(cx + (12 * cs(a) >> 7), cy - (12 * sn(a) >> 7), cx + (50 * cs(a) >> 7), cy - (50 * sn(a) >> 7), T_TEXT, 2);
+        sc_disc(cx + (50 * cs(a) >> 7), cy - (50 * sn(a) >> 7), 3, T_TEXT);
+    }
+    cv_text(134, 2, &AF_M, TP_NAME[tape.st], tape_col());
+    if (tape.len) {                                            /* the position / the length, in seconds and tenths */
+        b[0] = 0;
         num(b, (int32_t)tape.pos / 1000);
         str_cat(b, ".", sizeof b);
         num(v, (int32_t)tape.pos / 100 % 10);
@@ -137,11 +175,13 @@ static void sc_cassette(uint32_t y)              /* 240 x 124 */
         num(v, (int32_t)tape.len / 1000);
         str_cat(b, v, sizeof b);
         str_cat(b, " S", sizeof b);
-        cv_text_r(206, 14, &AF_S, b, T_TEXT, T_BG);
+        cv_text(134, 24, &AF_S, b, T_TEXT);
     }
-    num(b, spd * 100 / 65536);                                 /* the speed, the pitch and the artifacts */
+    str_cpy(b, "RATE ", sizeof b);
+    num(v, spd * 100 / 65536);
+    str_cat(b, v, sizeof b);
     str_cat(b, " %", sizeof b);
-    cv_text(34, 29, &AF_S, b, T_MID);
+    cv_text(134, 42, &AF_S, b, T_MID);
     sem = set.g[G_PITCH] + ((tape.pads >> PD_UP & 1u) ? 12 : 0) - ((tape.pads >> PD_DOWN & 1u) ? 12 : 0) +
           ((tape.pads >> PD_FIFTH & 1u) ? 7 : 0);
     if (sem || set.g[G_LOCK]) {
@@ -152,28 +192,18 @@ static void sc_cassette(uint32_t y)              /* 240 x 124 */
             par_text(v, sizeof v, sem, F_PITCH);
             str_cat(b, v, sizeof b);
         }
-        cv_text(96, 29, &AF_S, b, T_THEME);
+        cv_text(134, 58, &AF_S, b, T_THEME);
     }
     if (tape.pads >> PD_CHEW & 1u)
-        cv_text_r(206, 29, &AF_S, "CHEW", T_ACCENT, T_BG);
+        cv_text(134, 74, &AF_S, "TEARING", T_ACCENT);
     else if (tape.def > 3000)
-        cv_text_r(206, 29, &AF_S, "DROPOUT", T_REC, T_BG);
+        cv_text(134, 74, &AF_S, "A GAP", T_REC);
     else if (tape.gon)
-        cv_text_r(206, 29, &AF_S, "GRAINS", T_THEME, T_BG);
-    for (k = 0; k < 2; k++) {                                  /* the reels: the tape's pack, the hub, three spokes */
-        int32_t cx = k ? rc : lc, r = k ? rr : rl, s;
-        sc_disc(cx, cy, r, T_TINT);
-        sc_ring(cx, cy, r, T_DIM);
-        sc_disc(cx, cy, 9, T_RAISE);
-        for (s = 0; s < 6; s++) {
-            int32_t a = (int32_t)(sc2.cph >> 8) * (rev ? -1 : 1) + 20 * s;
-            cv_line_t(cx, cy, cx + cs(a) * 9 / 127, cy - sn(a) * 9 / 127, T_MID, 2);
-        }
-        sc_disc(cx, cy, 3, T_BG);
-    }
-    cv_line_t(lc - 4, cy + rl, 112, 106, T_MID, 1);            /* the tape over the head */
-    cv_line_t(112, 106, 128, 106, T_MID, 1);
-    cv_line_t(128, 106, rc + 4, cy + rr, T_MID, 1);
+        cv_text(134, 74, &AF_S, "SHIFTED", T_THEME);
+    if (cut)
+        cv_text(134, 92, &AF_S, "SLICE LOOPS", T_ACCENT);
+    else if (tape.st == TP_EMPTY)
+        cv_text(134, 92, &AF_S, "REC: CUT A SLICE", T_DIM);
     cv_blit(0, y);
 }
 
@@ -182,7 +212,7 @@ static void sc_pads(uint32_t y)                  /* 240 x 124 */
 {
     int32_t i;
     cv_begin(240, 124, T_BG);
-    cv_text(8, 0, &AF_S, "HOLD SEQ, PLAY THE KEYS", T_MID);
+    cv_text(8, 0, &AF_S, "HOLD SEQ, PLAY THE KEYS: TIME OPS", T_MID);
     for (i = 0; i < (int32_t)NPAD; i++) {
         int32_t col = i / 5, row = i % 5, x = 3 + col * 79, yy = 16 + row * 21;
         int on = i == PD_ECHO ? dl.freeze != 0u : ((tape.pads >> i) & 1u) != 0u;
@@ -303,7 +333,7 @@ static void sc_scl(uint32_t y)                   /* 240 x 124 */
         par_text(t, sizeof t, set.g[G_LOW], F_LOW);
         str_cat(b, t, sizeof b);
     }
-    cv_text(130, 22, &AF_S, sc ? b : "ANY ROOT", T_MID);
+    cv_text(130, 22, &AF_S, sc ? b : "PLAY ANY NOTE", T_MID);
     b[0] = 0;
     if (sc == 0)
         str_cpy(b, "ALL TWELVE", sizeof b);
@@ -355,7 +385,7 @@ static void sc_scl(uint32_t y)                   /* 240 x 124 */
 /* ---- SHOEGAZE's pedalboard (FX): fuzz, chorus, reverb, level ---- */
 static void sc_pedals(uint32_t y)                /* 240 x 124 */
 {
-    static const char *const NAME[4] = {"FUZZ", "CHORUS", "REVERB", "LEVEL"};
+    static const char *const NAME[4] = {"FUZZ", "SHIMMER", "BLOOM", "LEVEL"};
     int32_t v[4], i, xx, lev = sc_level(), t = (int32_t)(fm1_ms / 40u);
     char b[8];
     v[0] = cur.p[P_DRIVE];

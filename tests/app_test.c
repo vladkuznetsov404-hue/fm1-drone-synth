@@ -101,6 +101,8 @@ static void reset_state(void)                    /* the app's RAM as at power-on
     memset(&ui, 0, sizeof ui);
     memset(&snd, 0, sizeof snd);
     memset(snd.fm_last, 0xFF, sizeof snd.fm_last);
+    snd.croot = -1;                              /* (as the initialiser: no chord latched, the chord watch not yet seen) */
+    snd.chsig = 0xFFu;
     memset(&scope, 0, sizeof scope);
     memset(&fx, 0, sizeof fx);
     memset(fx.last, 0xFF, sizeof fx.last);       /* (-1: never updated, as at power-on) */
@@ -249,7 +251,7 @@ static void screen(void)
     check("layout: nothing cut or outside its canvas, at every value", host_clipped == 0u);
     check("layout: no row's label runs into its value, at every value", overlap == 0u);
     check("layout: HOME's tape line: state, bar and SOON 8 px apart",
-          40 + text_w(&AF_M, "EMPTY") + 8 <= TB_X && TB_X + TB_W + 8 <= 232 - text_w(&AF_S, "SOON"));
+          46 + text_w(&AF_M, "EMPTY") + 8 <= TB_X && TB_X + TB_W + 8 <= 232 - text_w(&AF_S, "SOON"));
     if (host_clipped)
         printf("  (%u, the last: %s %d,%d..%d,%d in %dx%d)\n", host_clipped, host_clip_buf, host_clip_box[0], host_clip_box[1], host_clip_box[2], host_clip_box[3], host_clip_box[4], host_clip_box[5]);
     power_cycle();
@@ -419,6 +421,26 @@ static void controls(void)
         host_press(B_SEQ, 0);
         host_frame();
         check("SEQ tapped with no pad: TAPE 2 -> TAPE", ui.page == PG_TAPE);
+        {   /* the slice of time, with something on the tape and a CUT pad down */
+            uint32_t q;
+            for (q = 0; q < tape.n; q++)
+                tape_cells[q] = (int8_t)(70.0 * sin(q * 0.0009) * sin(q * 0.00002 + 1.0));
+            host_press(B_SEQ, 1);
+            host_frame();
+            fm1_in.notes |= 1u << PD_ST8;
+            host_frame();
+            host_render(buf, CTL);
+            host_frame();
+            ui_page(PG_TAPE);
+            host_frame();
+            host_png("build/shots/slice_cut.png");
+            fm1_in.notes = 0;
+            host_frame();
+            host_press(B_SEQ, 0);
+            host_frame();
+            host_render(buf, CTL);
+            ui_page(PG_TAPE);
+        }
         {
             int32_t sp0 = tape.nudge;
             turn(EN_ALGO, 2);
@@ -1085,6 +1107,20 @@ static void scope_shot(void)
     cur.p[P_MASSA] = 100;
     run_frames(60);
     host_png("build/shots/fx_drone_hot.png");
+    set.g[G_MODE] = MODE_SHOE;                   /* the same sky in SHOEGAZE: a quasar, its own four dials */
+    cur = bank.s[1];
+    app_palette();
+    ui_page(PG_HOME);
+    ui.full = 1;
+    run_frames(30);
+    check("SHOEGAZE HOME: the quasar drawn, its dials MASSA BLOOM SHIMMER DARK", ink_rows(48, 152) > 40u &&
+          cell(PG_HOME, 1) == P_REVERB && cell(PG_HOME, 2) == P_CHORUS);
+    host_png("build/shots/home_quasar.png");
+    set.g[G_MODE] = MODE_HARSH;
+    cur = bank.s[1];
+    app_palette();
+    ui.full = 1;
+    run_frames(2);
     set.g[G_DMIX] = 70;
     set.g[G_DFB] = 60;
     set.g[G_DHEADS] = 7;
@@ -2130,6 +2166,82 @@ static void scl_audio(void)
     host_render(buf, 64);
 }
 
+
+/* ---------------------------------------------------------- chord glide --- */
+static voice_t *voice_of(uint32_t note)
+{
+    uint32_t j;
+    for (j = 0; j < NV; j++)
+        if (snd.v[j].state == V_ON && snd.v[j].note == note)
+            return &snd.v[j];
+    return 0;
+}
+
+static void scl_glide(void)
+{
+    voice_t *v;
+    uint32_t j, ok;
+    int32_t pk = 0;
+    int64_t d0 = 1;
+    reset_state();
+    host_boot();
+    set.g[G_OCT] = 0;
+    set.g[G_SCALE] = 1;                          /* A minor: key 0 = A3 (57), key 2 = C4 (60), key 4 = E4 (64) */
+    set.g[G_ROOT] = 9;
+    set.g[G_CHORD] = 1;                          /* POWER */
+    set.g[G_SLIDE] = 10;                         /* a time constant of 1 s */
+    tap_key(0);
+    check("SLIDE: POWER on A: A3 and E4 sound", n_held() == 2 && has_note(57) && has_note(64));
+    tap_key(2);
+    check("another key takes the chord over: still two voices, now C4 and G4 (no third, no steal)",
+          n_held() == 2 && has_note(60) && has_note(67) && !has_note(57) && !has_note(64));
+    v = voice_of(60);
+    check("... the voice goes up from A3 and has not arrived yet (glide)", v && v->base > note_inc(57) && v->base < note_inc(60));
+    d0 = v ? (int64_t)v->tgt - (int64_t)v->base : 1;
+    for (j = ok = 0; j < 2u; j++) {              /* half a second of audio: still on its way, never a jump */
+        int32_t i;
+        host_render(buf, BLOCKS(FS / 4));
+        for (i = 0; i < (int32_t)(2 * (FS / 4)); i += 2)
+            pk = buf[i] > pk ? buf[i] : -buf[i] > pk ? -buf[i] : pk;
+    }
+    check("... after 0.5 s of a 1 s time constant it is still short of the note, and the output stays bounded",
+          v && v->base < v->tgt && pk < 32000);
+    check("... the glide is a one-pole of 1 s: after 0.5 s the distance left is 50..72 % (e^-0.5 = 61 %)",
+          v && ((int64_t)v->tgt - (int64_t)v->base) * 100 / d0 >= 50 && ((int64_t)v->tgt - (int64_t)v->base) * 100 / d0 <= 72);
+    for (j = 0; j < 5u; j++)
+        host_render(buf, BLOCKS(FS * 2u));
+    check("... after 10 s it is on the note exactly", v && v->base == note_inc(60) && voice_of(67) && voice_of(67)->base == note_inc(67));
+    set.g[G_SLIDE] = 0;
+    tap_key(4);                                  /* E4: E4 and B4 */
+    v = voice_of(64);
+    check("SLIDE 0: the chord changes at once", n_held() == 2 && v && v->base == note_inc(64) && voice_of(71) && voice_of(71)->base == note_inc(71));
+    set.g[G_CHORD] = 3;                          /* SUS4 turned while it sounds: E4 A4 B4 */
+    host_render(buf, CTL);
+    check("CHORD turned while a chord sounds: it becomes SUS4 (a third voice swells in)", n_held() == 3 && has_note(64) && has_note(69) && has_note(71));
+    set.g[G_CHORD] = 0;
+    host_render(buf, CTL);
+    check("... and back to SINGLE: the root alone", n_held() == 1 && has_note(64));
+    set.g[G_CHORD] = 1;
+    host_render(buf, CTL);
+    tap_key(4);
+    host_render(buf, BLOCKS(FS));
+    check("the same key again ends the chord", n_held() == 0);
+    set.g[G_CHORD] = 0;
+    set.g[G_LOW] = 0;
+    tap_key(0);
+    tap_key(2);
+    check("MANUAL (SINGLE, the boot default): keys stack as single notes, nothing morphs", n_held() == 2 && has_note(57) && has_note(60));
+    check("... MANUAL is the default scale and chord", SP[0].def == SP[0].def && GP[G_SCALE].def == 0 && GP[G_CHORD].def == 0 && GP[G_SLIDE].def == 15);
+    tap_key(3);
+    tap_key(4);
+    set.g[G_SLIDE] = 10;
+    tap_key(6);                                  /* a fifth note: the oldest is stolen, and it glides to its new note */
+    v = voice_of((uint32_t)key_note(6));
+    check("a stolen voice glides to its new note (it is not already there)", n_held() == NV && v && v->base != v->tgt);
+    app_audio_stop();
+    host_render(buf, 64);
+}
+
 int main(void)
 {
     if (system("mkdir -p build/shots"))
@@ -2148,6 +2260,7 @@ int main(void)
     tape_pads_audio();
     shoe_audio();
     scl_audio();
+    scl_glide();
     delay_audio();
     puts(failed ? "APP TEST FAILED" : "app test passed");
     return failed ? 1 : 0;

@@ -67,6 +67,17 @@ static void sc_dial(int32_t cx, int32_t cy, int32_t r, int32_t at, uint16_t ring
     cv_line_t(cx, cy, cx + DIAL_V[at][0] * (r - 2) / 32, cy + DIAL_V[at][1] * (r - 2) / 32, ptr, 2);
 }
 
+static const int8_t C120[120] = {
+    127, 127, 126, 125, 124, 123, 121, 119, 116, 113, 110, 107, 103, 99, 94, 90, 85, 80, 75, 69,
+    64, 58, 52, 46, 39, 33, 26, 20, 13, 7, 0, -7, -13, -20, -26, -33, -39, -46, -52, -58,
+    -63, -69, -75, -80, -85, -90, -94, -99, -103, -107, -110, -113, -116, -119, -121, -123, -124, -125, -126, -127,
+    -127, -127, -126, -125, -124, -123, -121, -119, -116, -113, -110, -107, -103, -99, -94, -90, -85, -80, -75, -69,
+    -64, -58, -52, -46, -39, -33, -26, -20, -13, -7, 0, 7, 13, 20, 26, 33, 39, 46, 52, 58,
+    64, 69, 75, 80, 85, 90, 94, 99, 103, 107, 110, 113, 116, 119, 121, 123, 124, 125, 126, 127,
+};
+static int32_t cs(int32_t i) { return C120[(i % 120 + 120) % 120]; }          /* cos of i x 3 degrees, x 127 */
+static int32_t sn(int32_t i) { return C120[((i + 90) % 120 + 120) % 120]; }   /* sin */
+
 static int32_t sc_bits(int32_t v)    /* the length of |v| in bits: a level on a log scale */
 {
     int32_t n = 0;
@@ -78,97 +89,85 @@ static int32_t sc_bits(int32_t v)    /* the length of |v| in bits: a level on a 
     return n;
 }
 
-/* ---- the tape echo ---- */
-#define SCD_Y 62                 /* the tape's upper run */
-#define SCD_Y2 108               /* the lower run */
-#define SCD_LX 40                /* the reels' centres */
-#define SCD_RX 210
-#define SCD_R 23
-#define SCD_REC 72               /* the record head */
+/* ---- the anomaly (the tape echo): a source, its echoes as lenses along a ray, the sound on the ray, a bent sheet ---- */
+#define SCD_Y 52                 /* the ray */
+#define SCD_REC 56               /* the source (the record head) */
 
 static void sc_delay(uint32_t y)
 {
     int32_t d = dl.d_pub ? dl.d_pub : dly_ms10(set.g[G_DT]) * DL_Q, ms10 = d / DL_Q, cells = d >> 16, v = dl.v_pub;
-    int32_t sp = 14 + (ms10 - 600) * 32 / 8900, x, k, off, i, dt, tick, spoke, heads = set.g[G_DHEADS];
+    int32_t sp = 16 + (ms10 - 600) * 39 / 8900, x, k, off, i, dt, heads = set.g[G_DHEADS], tms = dly_ms10(set.g[G_DT]), tsp;
+    int32_t bend, well, r0, x0 = 0, y0 = 0, row;
     uint32_t w = dl.w_pub;
     char b[24];
-    sp = sp < 14 ? 14 : sp > 46 ? 46 : sp;
+    sp = sp < 16 ? 16 : sp > 55 ? 55 : sp;
+    tsp = 16 + (tms - 600) * 39 / 8900;
+    tsp = tsp < 16 ? 16 : tsp > 55 ? 55 : tsp;
     dt = (int32_t)(fm1_ms - sc.t);
     dt = dt < 0 || dt > 200 || !sc.t ? 70 : dt;
     sc.t = fm1_ms;
-    sc.ph += (uint32_t)(sp * 256 * dt * 10 / ms10);   /* the tape runs D in ms10 / 10 ms past a head spacing */
-    tick = (int32_t)(sc.ph >> 8) % 12;
-    spoke = (int32_t)(sc.ph >> 8) / 4 % 36;
+    sc.ph += (uint32_t)(sp * 256 * dt * 10 / ms10);   /* the ripples run out faster the shorter the delay is */
+    bend = -v / 5243;                                 /* head 1's pitch change in %: the sheet is dragged by it */
+    bend = bend > 60 ? 60 : bend < -60 ? -60 : bend;
+    well = 6 + set.g[G_DMIX] * 12 / 100 + set.g[G_DFB] * 8 / 100;
     cv_begin(240, 124, T_BG);
-    /* the reels and the tape round them */
-    for (k = 0; k < 2; k++) {
-        int32_t cx = k ? SCD_RX : SCD_LX, s;
-        sc_ring(cx, 85, SCD_R, T_DIM);
-        sc_disc(cx, 85, 7, T_RAISE);
-        for (s = 0; s < 3; s++) {
-            int32_t a = (spoke + 12 * s) % 36;
-            cv_line_t(cx + SPOKE_V[a][0] * 7 / 32, 85 + SPOKE_V[a][1] * 7 / 32, cx + SPOKE_V[a][0] * 19 / 32,
-                      85 + SPOKE_V[a][1] * 19 / 32, T_DIM, 2);
-        }
-        sc_disc(cx, 85, 2, T_MID);
+    for (k = 0; k < 3; k++) {                         /* ripples spreading from the source */
+        r0 = 12 + (int32_t)((sc.ph >> 7) + (uint32_t)k * 15u) % 45;
+        sc_ring(SCD_REC, SCD_Y, r0, r0 < 24 ? T_LINE : r0 < 36 ? T_TINT : T_TINT);
     }
-    cv_rect(SCD_LX, SCD_Y, SCD_RX - SCD_LX, 3, T_DIM);                /* the runs */
-    cv_rect(SCD_LX, SCD_Y2, SCD_RX - SCD_LX, 3, T_DIM);
-    for (x = SCD_LX + tick; x < SCD_RX; x += 12)                      /* the upper run moves right, the lower left */
-        cv_rect(x, SCD_Y, 1, 3, T_MID);
-    for (x = SCD_RX - tick; x > SCD_LX; x -= 12)
-        cv_rect(x, SCD_Y2, 1, 3, T_MID);
-    /* the sound on the tape: the newest cell at the record head, the oldest at head 3 */
-    for (x = SCD_REC; x <= SCD_REC + 3 * sp; x++) {
-        int32_t span = cells / sp, m = 0, amp;
+    cv_rect(SCD_REC, SCD_Y, 232 - SCD_REC, 1, T_LINE);                /* the ray */
+    for (x = SCD_REC; x <= SCD_REC + 3 * sp; x++) {                   /* the sound on it: the newest at the source */
+        int32_t span = cells / sp, m = 0, amp, c;
         off = (x - SCD_REC) * cells / sp;
         span = span > 16 ? 16 : span < 1 ? 1 : span;
         for (i = 0; i < span; i++) {
-            int32_t c = dl_cells[(w - 1u - (uint32_t)(off + i)) & DL_MASK];
+            c = dl_cells[(w - 1u - (uint32_t)(off + i)) & DL_MASK];
             c = c < 0 ? -c : c;
             m = c > m ? c : m;
         }
-        amp = sc_bits(m) - 5;                    /* (a log scale from 32 up: 1 px, 12 000: 9 px) */
+        amp = sc_bits(m) - 8;                         /* (a log scale from 256 up: 1 px, 12 000: 6 px) */
         if (amp > 0)
-            cv_rect(x, SCD_Y + 1 - amp, 1, 2 * amp, T_THEME);
+            cv_rect(x, SCD_Y - amp, 1, 2 * amp + 1, T_THEME);
     }
-    /* the heads: down on the tape when they play, lifted when they do not; the ghosts are where TIME is sending them */
-    {
-        int32_t tms = dly_ms10(set.g[G_DT]), tsp = 14 + (tms - 600) * 32 / 8900;
-        tsp = tsp < 14 ? 14 : tsp > 46 ? 46 : tsp;
-        for (k = 0; k < 3 && (tsp - sp > 1 || sp - tsp > 1); k++) {
-            int32_t gx = SCD_REC + (k + 1) * tsp;
-            cv_rrect(gx - 6, 31, 12, 18, 2, T_DIM, T_BG);
-            cv_rrect(gx - 5, 32, 10, 16, 2, T_BG, T_DIM);
+    for (k = 0; k < 3 && (tsp - sp > 1 || sp - tsp > 1); k++)         /* where TIME is sending the echoes: ghosts */
+        sc_ring(SCD_REC + (k + 1) * tsp, SCD_Y, 9, T_DIM);
+    for (k = 0; k < 3; k++) {                                         /* the echoes: a lens each, dark when that head is off */
+        int32_t hx = SCD_REC + (k + 1) * sp, on = (heads >> k) & 1;
+        char n[2] = {(char)('1' + k), 0};
+        sc_disc(hx, SCD_Y, 11 - k, on ? T_THEME : T_RAISE);
+        sc_disc(hx, SCD_Y, 8 - k, T_BG);
+        if (on)
+            sc_ring(hx, SCD_Y, 5 - k, T_ACCENT);
+        cv_text_in(hx - 8, 28, 16, &AF_S, n, on ? T_TEXT : T_DIM, T_BG);
+    }
+    sc_disc(SCD_REC, SCD_Y, 12, T_TINT);                              /* the source */
+    sc_disc(SCD_REC, SCD_Y, 7, T_ACCENT);
+    cv_rect(SCD_REC, 17, sp, 1, T_ACCENT);                            /* the dimension: the source to echo 1 is TIME */
+    cv_rect(SCD_REC, 14, 1, 7, T_ACCENT);
+    cv_rect(SCD_REC + sp, 14, 1, 7, T_ACCENT);
+    cv_text(SCD_REC + sp + 6, 12, &AF_S, "= TIME", T_ACCENT);
+    for (row = 0; row < 4; row++) {                                   /* the sheet: a well under the source, dragged by the bend */
+        int32_t base = 78 + row * 9;
+        for (x = 8; x <= 232; x += 8) {
+            int32_t dx = x - SCD_REC, sag = well * 128 / (128 + dx * dx / 24), rip = cs((x + (int32_t)(sc.ph >> 9)) / 2) * bend / 256;
+            int32_t yy = base + sag * (4 - row) / 4 + rip;
+            if (x > 8)
+                cv_line_t(x0, y0, x, yy, row == 0 ? T_MID : T_DIM, 1);
+            x0 = x;
+            y0 = yy;
         }
     }
-    for (k = 0; k < 3; k++) {
-        int32_t hx = SCD_REC + (k + 1) * sp, on = (heads >> k) & 1, hy = on ? 40 : 31;
-        char n[2] = {(char)('1' + k), 0};
-        cv_rrect(hx - 6, hy, 12, 18, 2, on ? T_THEME : T_RAISE, T_BG);
-        cv_text_in(hx - 6, hy + 3, 12, &AF_S, n, on ? T_INK : T_DIM, on ? T_THEME : T_RAISE);
-        if (on)
-            cv_rect(hx - 1, hy + 18, 3, 3, T_THEME);
-    }
-    cv_rrect(SCD_REC - 7, 38, 14, 20, 2, T_REC, T_BG);                /* the record head */
-    cv_text_in(SCD_REC - 7, 42, 14, &AF_S, "R", T_INK, T_REC);
-    cv_rect(SCD_REC, 27, sp, 1, T_ACCENT);                            /* the dimension: R to head 1 is TIME */
-    cv_rect(SCD_REC, 24, 1, 7, T_ACCENT);
-    cv_rect(SCD_REC + sp, 24, 1, 7, T_ACCENT);
-    cv_text(SCD_REC + sp + 6, 20, &AF_S, "= TIME", T_ACCENT);
-    /* the numbers: the delay, and the bend while the motor runs */
-    cv_text(8, 0, &AF_S, "TAPE ECHO", T_MID);
     num(b, ms10 / 10);
     str_cat(b, " MS", sizeof b);
     cv_text_r(232, 0, &AF_M, b, T_TEXT, T_BG);
-    if (dly_ms10(set.g[G_DT]) - ms10 > 30 || ms10 - dly_ms10(set.g[G_DT]) > 30) {   /* the motor is on its way */
-        str_cpy(b, "GOING TO ", sizeof b);               /* (the bottom row: below the reels and the lower run) */
-        num(b + 9, dly_ms10(set.g[G_DT]) / 10);
+    if (tms - ms10 > 30 || ms10 - tms > 30) {                         /* the motor is on its way */
+        str_cpy(b, "GOING TO ", sizeof b);               /* (the bottom row: below the sheet) */
+        num(b + 9, tms / 10);
         str_cat(b, " MS", sizeof b);
         cv_text_r(232, 112, &AF_S, b, T_DIM, T_BG);
     }
     if (v > 5243 || v < -5243) {                 /* head 1's pitch: D shortening by 0.04 cell a sample = +16 % */
-        int32_t pct = -v / 5243;                 /* (the heads read at 3 x at most, backwards or forwards) */
+        int32_t pct = -v / 5243;                         /* (the heads read at 3 x at most, backwards or forwards) */
         pct = pct > 200 ? 200 : pct < -400 ? -400 : pct;
         str_cpy(b, pct > 0 ? "SPINNING UP " : "SLOWING ", sizeof b);
         i = (int32_t)str_len(b);

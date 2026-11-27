@@ -25,7 +25,7 @@ static const int16_t CELLS[NPG][4] = {
     [PG_HOME] = {P_MASSA, P_BEATS, P_DARK, P_BREATH},
     [PG_EDIT] = {P_LAYERS, P_SUB, P_SUBOCT, P_CURVE},          /* SAW; FM: CELLS_FM */
     [PG_FX] = {P_DRIVE, P_TONE, P_CAB, P_LEVEL},
-    [PG_ENV] = {P_ATTACK, P_RELEASE, C_BLANK, C_BLANK},
+    [PG_ENV] = {P_ATTACK, P_RELEASE, C_G + G_SLIDE, C_BLANK},
     [PG_LFO] = {P_RATE, P_TOPITCH, P_TOCUT, P_TOLEVEL},
     [PG_SCL] = {C_G + G_SCALE, C_G + G_ROOT, C_G + G_CHORD, C_G + G_LOW},
     [PG_DELAY] = {C_G + G_DT, C_G + G_DFB, C_G + G_DMIX, C_G + G_DHEADS},
@@ -37,9 +37,15 @@ static const int16_t CELLS[NPG][4] = {
     [PG_GLO] = {C_G + G_CH, C_G + G_TRS, C_G + G_VOL, C_G + G_MODE},
 };
 static const int16_t CELLS_FM[4] = {P_RATIO, P_FB, P_INDEX, P_SUB};
+static const int16_t CELLS_SHOE_HOME[4] = {P_MASSA, P_REVERB, P_CHORUS, P_DARK};   /* the quasar's four: mass, bloom, shimmer, dark */
 static const int16_t CELLS_SHOE_FX[4] = {P_DRIVE, P_CHORUS, P_REVERB, P_LEVEL};   /* SHOEGAZE's FX */
-static const char *const PG_TITLE[NPG] = {"HOME", "EDIT", "FX", "ENV", "LFO", "SCL", "DELAY", "DELAY 2", "DELAY 3",
-                                          "DELAY 4", "TAPE", "TAPE 2", "GLO"};
+static const char *const PG_TITLE[NPG] = {"HOME", "EDIT", "FX", "ENV", "LFO", "SCL", "ANOMALY", "ANOMALY 2", "ANOMALY 3",
+                                          "ANOMALY 4", "SLICE", "SLICE 2", "GLO"};
+/* what a page says in its foot while no note is latched (the foot has room) */
+static const char *const PG_HINT[NPG] = {0, "ALGO: SAW / FM", "KNOBS = THE AMP", "SWELL: SLOW IS HEAVY", "THE SLOW BREATH",
+                                         "ENV > SLIDE: CHORD GLIDE", "ARP: NEXT PAGE", "ARP: NEXT PAGE", "ARP: NEXT PAGE",
+                                         "ARP: BACK TO THE FIRST", "ALGO: NUDGE THE TIME", "SEQ TAP: OTHER PAGE",
+                                         "MODE: HARSH / SHOE"};
 static const uint8_t HEAD_ORDER[7] = {1, 2, 4, 3, 5, 6, 7};   /* HEADS as the knob steps through it: one head, two, three */
 
 static void app_palette(void);
@@ -66,6 +72,8 @@ static int32_t cell(uint32_t page, uint32_t i)
 {
     if (page == PG_FX && set.g[G_MODE] == MODE_SHOE)
         return CELLS_SHOE_FX[i];
+    if (page == PG_HOME && set.g[G_MODE] == MODE_SHOE)
+        return CELLS_SHOE_HOME[i];
     return page == PG_EDIT && cur.engine == ENG_FM ? CELLS_FM[i] : CELLS[page][i];
 }
 
@@ -117,7 +125,7 @@ static uint32_t scene_sig(uint32_t h)            /* what the page's picture show
         h = h_add(h, fm1_ms / 80u);
         h = h_add(h, scope.count);
         for (i = 0; i < 4u; i++)
-            h = h_add(h, (uint32_t)cur.p[CELLS[PG_HOME][i]]);
+            h = h_add(h, (uint32_t)cur.p[cell(PG_HOME, i)]);
         h = h_add(h, held_sig());
         h = h_add(h, (uint32_t)set.g[G_MODE]);
         break;
@@ -320,15 +328,15 @@ static void held_notes(uint8_t *n)               /* the latched notes, in voice 
         n[i] = snd.held[i];
 }
 
-#define TB_X 122                 /* HOME's tape line: TAPE, the state (EMPTY the widest, from x 40), the bar */
-#define TB_W 64
+#define TB_X 124                 /* HOME's tape line: SLICE, the state (EMPTY the widest, from x 46), the bar */
+#define TB_W 62
 
 static void draw_tape(uint32_t y)                /* HOME: the cassette's state and position */
 {
     uint32_t w = tape_pct() * TB_W / 100u;
     cv_begin(240, 24, T_BG);
-    cv_text(8, 5, &AF_S, "TAPE", T_MID);
-    cv_text(40, 4, &AF_M, TP_NAME[tape.st], tape_col());
+    cv_text(8, 5, &AF_S, "SLICE", T_MID);
+    cv_text(46, 4, &AF_M, TP_NAME[tape.st], tape_col());
     cv_rect(TB_X, 10, TB_W, 4, T_TINT);
     if (w)
         cv_rect(TB_X, 10, (int32_t)w, 4, tape_col());
@@ -354,9 +362,12 @@ static void draw_foot(uint32_t y)                /* the other pages: held notes 
     }
     cv_begin(240, 26, T_BG);
     cv_rect(0, 0, 240, 1, T_LINE);
-    cv_text(8, 7, &AF_S, b, T_TEXT);
+    if (!(n[0] | n[1] | n[2] | n[3]) && PG_HINT[ui.page])
+        cv_text(8, 7, &AF_S, PG_HINT[ui.page], T_DIM);
+    else
+        cv_text(8, 7, &AF_S, b, T_TEXT);
     cv_text_r(232, 7, &AF_S, TP_NAME[tape.st], tape_col(), T_BG);
-    cv_text_r(232 - text_w(&AF_S, TP_NAME[tape.st]) - 6, 7, &AF_S, "TAPE", T_MID, T_BG);
+    cv_text_r(232 - text_w(&AF_S, TP_NAME[tape.st]) - 6, 7, &AF_S, "SLICE", T_MID, T_BG);
     cv_blit(0, y);
 }
 

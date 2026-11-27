@@ -29,6 +29,7 @@ enum { G_CH, G_TRS, G_VOL, G_OCT, G_SLOT, G_SPEED, G_DIR, G_DECAY, G_WEAR, G_BRA
        G_SCALE, G_ROOT, G_CHORD, G_LOW,                    /* SCL: the scale of the keys, the chords */
        G_MODE,                                             /* HARSH or SHOEGAZE */
        G_DROP,                                             /* the cassette's dropouts */
+       G_SLIDE,                                            /* the notes' glide when a chord changes (tenths of a second) */
        NG };
 #define G_ROOM 48
 
@@ -61,7 +62,7 @@ static const par_t SP[NP] = {
     [P_RATE] = {"RATE", 1, 100, 10, F_HZ},         /* 0.01 .. 1.00 Hz */
     [P_TOPITCH] = {"TO PITCH", 0, 100, 20, F_NUM}, [P_TOCUT] = {"TO CUTOFF", 0, 100, 40, F_NUM},
     [P_TOLEVEL] = {"TO LEVEL", 0, 100, 20, F_NUM},
-    [P_CHORUS] = {"CHORUS", 0, 100, 0, F_NUM},     [P_REVERB] = {"REVERB", 0, 100, 0, F_NUM},
+    [P_CHORUS] = {"SHIMMER", 0, 100, 0, F_NUM},    [P_REVERB] = {"BLOOM", 0, 100, 0, F_NUM},
 };
 
 static const par_t GP[NG] = {
@@ -93,6 +94,7 @@ static const par_t GP[NG] = {
     [G_CHORD] = {"CHORD", 0, 7, 0, F_CHORD},       [G_LOW] = {"LOW ROOT", 0, 2, 0, F_LOW},
     [G_MODE] = {"MODE", 0, 1, 0, F_MODE},
     [G_DROP] = {"DROPOUT", 0, 100, 0, F_NUM},
+    [G_SLIDE] = {"SLIDE", 0, 60, 15, F_SEC10},     /* the time constant of a note moving to the next chord: 0 = at once */
 };
 
 typedef struct {
@@ -336,7 +338,7 @@ static void par_text(char *b, uint32_t n, int32_t v, uint32_t fmt)   /* n >= 16 
     case F_PITCH: if (v > 0) { b[0] = '+'; num(b + 1, v); } else num(b, v); str_cat(b, " ST", n); break;
     case F_MODE: str_cpy(b, v ? "SHOEGAZE" : "HARSH", n); break;
     case F_SCALE: {
-        static const char *const SC[7] = {"CHROMA", "MINOR", "PHRYGIAN", "LOCRIAN", "HARM MIN", "PENT MIN", "WHOLE"};
+        static const char *const SC[7] = {"MANUAL", "MINOR", "PHRYGIAN", "LOCRIAN", "HARM MIN", "PENT MIN", "WHOLE"};
         str_cpy(b, SC[v < 0 || v > 6 ? 0 : v], n);
         break;
     }
