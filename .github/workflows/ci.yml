@@ -40,6 +40,11 @@ jobs:
       - name: Build
         run: ./build.sh
 
+      - name: Debug (temporary) the audio ISR's calls
+        run: |
+          awk '/<fm1_alnk0_irq>:/,/^$/' build/firmware.dis | grep -iE "call|jal|jl |<__" | sed 's/^/ISRDBG /' | head -60 || true
+          grep -E "^[0-9a-f]+ <__(mul|div|ash|lsh|ad|sub)" build/firmware.dis | sed 's/^/ISRDBG helper /' || true
+
       - name: Host tests
         run: |
           . ~/emsdk/emsdk_env.sh
