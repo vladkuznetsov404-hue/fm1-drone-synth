@@ -10,15 +10,26 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 const [url, out = 'build/emu_shots'] = process.argv.slice(2);
-const STEPS = [
+const STEPS = [                // MASSA (docs/SPEC.md): latch, every page, the cassette, the SAVE dialog
   ['shot', 'boot'],
-  ['knob', 'KNOB 1', 3],
-  ['knob', 'KNOB 4', -2],
-  ['shot', 'knobs'],
-  ['button', 'PLAY', 600],
-  ['key', 'z', 600],
-  ['wait', 300],
-  ['shot', 'after'],
+  ['key', 'z', 300],             // latch F1 ...
+  ['key', 'c', 300],             // ... and A1 (a tap each: they drone on)
+  ['wait', 2500],                // the 2 s swell
+  ['knob', 'KNOB 1', 5],
+  ['shot', 'home'],
+  ['button', 'EDIT', 300], ['shot', 'edit'],
+  ['knob', 'ALGORITHM', 1], ['shot', 'edit-fm'], ['knob', 'ALGORITHM', -1],
+  ['button', 'FX', 300], ['knob', 'KNOB 3', 1], ['shot', 'fx'],
+  ['button', 'ENV', 300], ['shot', 'env'],
+  ['button', 'LFO', 300], ['shot', 'lfo'],
+  ['button', 'SEQ', 300], ['shot', 'tape'],
+  ['button', 'SEQ', 300], ['shot', 'tape2'],
+  ['button', 'GLO', 300], ['shot', 'glo'],
+  ['button', 'HOME', 300],
+  ['button', 'REC', 200], ['wait', 1500], ['button', 'REC', 200], ['wait', 400], ['shot', 'tape-play'],
+  ['button', 'SAVE', 200], ['shot', 'save'],
+  ['button', 'OCT-', 200], ['shot', 'cancelled'],
+  ['button', 'SCL', 200], ['wait', 300], ['shot', 'silence'],
 ];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

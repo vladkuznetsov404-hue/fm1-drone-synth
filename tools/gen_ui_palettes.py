@@ -49,6 +49,10 @@ PALETTES = [
     ("NIGHT",  (0, 0, 0),       (0, 24, 10),     (150, 230, 170), (56, 220, 100),  (255, 255, 255)),
     # 1.0.2: black and white (the derived tokens are set, not blended: bw()); the old MONO is GREY (id 0)
     ("MONO",   (0, 0, 0),       (0, 0, 0),       (255, 255, 255), (255, 255, 255), (255, 255, 255)),
+    # MASSA (docs/SPEC.md Screens): black, a warm grey for text and labels, red values (as dark as the ink/sel
+    # check allows: black text on an 80 % SEL fill needs 4.5:1), the TINT blend a dark red for tracks and wells,
+    # a pale hot red for the one active thing
+    ("MASSA",  (0, 0, 0),       (28, 6, 6),      (214, 204, 200), (250, 96, 64),   (255, 196, 168)),
 ]
 BW = "MONO"
 BW_GREY = (82, 82, 82)             # MONO's one mid grey (RGB565 10/20/10): DIM LINE RAISE LANE

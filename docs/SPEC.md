@@ -22,42 +22,52 @@ The FM-1 has 27 keys, 14 buttons (FX SCL ENV LFO EDIT GLO HOME SAVE ARP SEQ PLAY
 | KNOB 3 | turn (HOME) | **DARK** 0..100: low-pass cutoff (100 = darkest). |
 | KNOB 4 | turn (HOME) | **BREATH** 0..100: depth (and a little rate) of the slow LFOs on cutoff, pitch and level. |
 | KNOB 1..4 | turn (other pages) | The four parameters of that page (see Screens). |
-| SELECT | turn | Next / previous page (HOME, EDIT, FX, ENV, LFO, TAPE, GLO). |
+| SELECT | turn | Next / previous page (HOME, EDIT, FX, ENV, LFO, TAPE, TAPE 2, GLO), wrapping. |
 | ALGORITHM | turn | Engine: **SAW** (detuned saws + sub) or **FM** (feedback FM + sub). The switch crossfades, notes keep sounding. |
-| PRESETS | turn | Pick a sound slot 1..16 and load it (the held notes keep sounding with the new sound). |
+| PRESETS | turn | Pick a sound slot 1..16 and load it (the held notes keep sounding with the new sound; unsaved edits of the sound before are dropped). |
 | HOME | press | HOME page. |
 | EDIT | press | EDIT page (engine). |
 | FX | press | FX page (fuzz, cabinet). |
 | ENV | press | ENV page (swell). |
 | LFO | press | LFO page (breath). |
-| SEQ | press | TAPE page. |
+| SEQ | press | TAPE page; on TAPE: TAPE 2 (BRAKE), and back. |
 | GLO | press | GLO page (global settings). |
 | SCL | press | **Silence**: release every latched note (fade out). |
 | SAVE | press | Save dialog: the current sound into the slot shown (PRESETS picks it), confirm with SAVE again or OCT+, cancel with OCT−. |
-| REC | press | Cassette: start recording (the first pass sets the loop length); while the tape plays, toggles **overdub**. |
+| REC | press | Cassette (acts at once): on an empty tape start recording (the first pass sets the loop length); while recording close the loop and play; while the tape plays toggle **overdub**; when stopped play with overdub. |
 | REC | hold 1 s | Erase the tape. |
-| PLAY | press | Cassette: play / stop. Stop runs the **tape brake** (the loop slows down to silence over the BRAKE time); play starts it again (spins up). |
-| ARP | press | Not used in v1 (screen says "SOON"). |
+| PLAY | press | Cassette: play / stop (while recording: close the loop and play; on an empty tape: nothing). Stop runs the **tape brake** (the loop slows down to silence over the BRAKE time); play starts it again (spins up). |
+| ARP | press | Not used in v1 (the screen says "ARP: SOON"). |
+
+LEDs: the current page's button (SEQ for TAPE and TAPE 2), SAVE while the dialog is open, REC while recording or
+overdubbing, PLAY while playing, OCT− below octave 0, OCT+ above it, SCL while held, the keys of the latched notes.
 
 ## Screens (240 × 240, dark)
 
-Palette: black background, dark red (#8B0000-ish) for drawing, a dim grey for labels, a brighter red for the
-selected / active item. The name MASSA in the large font on the boot screen.
+Palette `MASSA` (tools/gen_ui_palettes.py): black background, a warm grey for text and labels, red values
+(250, 96, 64), a pale hot red (255, 196, 168) for the active item; the dark red is the TINT blend (tracks, wells).
+The platform's contrast checks (black text on an 80 % fill of the value colour needs 4.5:1) do not allow a value
+colour as dark as #8B0000. The name MASSA in the large font on the boot screen, until the first frame.
 
-- **HOME**: centre: a live picture of the drone (the output waveform or a slow spectrum, dark red); top: engine
-  (SAW / FM), sound slot and name, octave; a row of up to 4 held note names; a small cassette state (EMPTY, REC, PLAY,
-  DUB, STOP, with the loop position as a bar); bottom: the four macro knobs MASSA, BEATS, DARK, BREATH as bars with
-  values.
+Every page has the same frame: a header (page name; engine and octave on the right), the sound line (slot, name,
+`*` when edited, the last MIDI note on the right; a short message such as SAVED, SILENCE, TAPE ERASED in its place
+for 1.5 s), four rows for KNOB 1..4 (number, label, value, a bar), and a footer with the latched notes and the tape's
+state. A value that does not reach the sound yet carries a dim SOON next to its label.
+
+- **HOME**: header and sound line; the latched notes large (four columns); the cassette's state (EMPTY, REC, PLAY,
+  DUB, STOP) with the loop position as a bar; the four macro knobs MASSA, BEATS, DARK, BREATH as compact rows. The
+  live picture of the drone (waveform or slow spectrum) is milestone 9; it will take the notes' place or share it.
 - **EDIT** (engine): SAW: layers per note (1..3), sub level, sub octave (−1/−2), spread curve. FM: ratio, feedback,
   index, sub level.
 - **FX**: fuzz drive, fuzz tone, cabinet (off / 4×12 / 4×12 dark), output level.
 - **ENV**: swell (attack 0..10 s), release 0..20 s, plus two free slots shown as "—".
 - **LFO**: breath rate (0.01..1 Hz), to pitch, to cutoff, to level.
 - **TAPE**: speed (½, 1, varispeed ½..1), direction (forward / reverse), decay per pass in overdub (0..100), wear
-  (wow, flutter, saturation and hiss together, 0..100); a fifth value BRAKE time (0.2..4 s) on SELECT-press or a
-  second TAPE page.
+  (wow, flutter, saturation and hiss together, 0..100).
+- **TAPE 2**: BRAKE time (0.2..4 s); three free rows.
 - **GLO**: MIDI channel (omni / 1..16), TRS MIDI IN on/off, master volume, a version line.
-- **SAVE** dialog: slot number and name, "SAVE?" with the confirm / cancel keys.
+- **SAVE** dialog: SAVE, the target slot and the name now in it, the keys (SAVE / OCT+ yes, OCT− no, PRESETS another
+  slot); knobs and other buttons do nothing while it is open.
 
 Each page draws only what changed (the platform's lazy drawing).
 
@@ -73,7 +83,9 @@ Each page draws only what changed (the platform's lazy drawing).
   tone tilt) → **4×12 cabinet** (a fixed low-pass ~4.5 kHz + a resonant hump ~100–150 Hz + a dip ~500 Hz, as IIR
   biquads) → low-pass (DARK) → level → the cassette.
 - **Breath**: three slow LFOs at unrelated rates (cutoff, pitch ±few cents, level ±1.5 dB), depth from BREATH.
-- **Swell / release**: per-note amplitude ramps (attack 0..10 s, release 0..20 s); no clicks on start, steal or stop.
+- **Swell / release**: per-note amplitude ramps (attack 0..10 s, release 0..20 s, at least ~6 ms); no clicks on
+  start, steal or stop. A stolen voice keeps its phase and level and changes pitch, then swells from there. A key or
+  note-on whose note is still releasing swells that voice back up.
 - The MASSA macro maps 0..100 to: fuzz drive (main), sub level (+), engine feedback / FM index (+). The exact curves
   are tuned by ear in the emulator.
 
@@ -98,14 +110,22 @@ REC presses).
 
 ## What is stored
 
-- **16 sounds** (all engine, FX, ENV, LFO and macro values, a 12-character name, the engine choice): two records.
-- **Settings** (MIDI channel, TRS MIDI IN, volume, octave, last sound): one record.
+- **16 sounds** (all engine, FX, ENV, LFO and macro values, a 12-character name, the engine choice): one record
+  (store slot 1, 16 × 94 bytes = 1 504 of 4 076). Each sound keeps its value count and room for 40 values, so new
+  values are appended and an older sound reads with them at their defaults.
+- **Settings** (MIDI channel, TRS MIDI IN, volume, octave, last sound, the cassette's values SPEED, DIRECTION, DECAY,
+  WEAR, BRAKE): one record (store slot 0), with its own value count.
+- Both are written by SAVE (confirmed in the dialog), never in the background: a save fades the audio ~100 ms.
+  Every value read back is range-checked; a bad one takes its default, the rest are kept.
 - Not stored: the latched notes, the cassette.
 
 ## MIDI
 
 - In over USB and TRS (TRS MIDI IN on by default, type A): **notes only**. Note-on latches like a key; note-off is
-  ignored (latch); a second note-on of the same note releases it. Channel from GLO (omni default).
+  ignored (latch); a second note-on of the same note releases it. Channel from GLO (omni default). TRS MIDI IN off
+  drops what arrives over TRS.
+- A lost stream (the input ring overflowed) only loses toggles, since note-offs do nothing: the drones go on, SCL
+  silences them.
 - No CC, no clock, no MIDI out in v1.
 
 ## Open questions
@@ -113,7 +133,7 @@ REC presses).
 - Whether 4 notes × 3 layers of the FM engine fit the audio ISR with the fuzz, cabinet and tape: measure in the
   emulator and on the unit; the fallback is fewer FM copies per note.
 - The best picture for HOME (waveform vs. a slow spectrum): try both in the emulator.
-- The second TAPE value page vs. putting BRAKE on GLO.
+- What goes on TAPE 2's free rows (BRAKE alone for now).
 
 ## Out of scope for v1
 
@@ -122,8 +142,9 @@ Step sequencer, arpeggiator, saving the tape, MIDI CC / clock / out, stereo effe
 
 ## Milestones
 
-1. **Skeleton**: every control from the table does something visible; all pages drawn; one plain saw voice with
-   latch from keys and MIDI; SCL silence; the settings and sound records with defaults, SAVE / load working.
+1. **Skeleton** (done, v0.1): every control from the table does something visible; all pages drawn; four latched
+   notes of one plain saw each, swell and release, volume, from keys and MIDI; SCL silence; the cassette's transport
+   without audio; the settings and sound records with defaults, SAVE / load working.
 2. **SAW drone engine**: 4 latched notes, detuned layers + sub, BEATS, swell / release, steal without clicks.
 3. **Fuzz + cabinet + DARK + MASSA macro**: tuned by ear in the emulator.
 4. **BREATH**: the slow LFOs.
