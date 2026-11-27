@@ -53,6 +53,9 @@ PALETTES = [
     # check allows: black text on an 80 % SEL fill needs 4.5:1), the TINT blend a dark red for tracks and wells,
     # a pale hot red for the one active thing
     ("MASSA",  (0, 0, 0),       (28, 6, 6),      (214, 204, 200), (250, 96, 64),   (255, 196, 168)),
+    # SHOEGAZE (MASSA's second mode): a hazy night-blue ground, lilac text, pink values, a cold cyan for the one
+    # active thing
+    ("SHOEGAZE", (12, 10, 30),    (34, 26, 62),    (226, 218, 246), (244, 148, 214), (140, 232, 255)),
 ]
 BW = "MONO"
 BW_GREY = (82, 82, 82)             # MONO's one mid grey (RGB565 10/20/10): DIM LINE RAISE LANE

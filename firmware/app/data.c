@@ -16,21 +16,29 @@ enum { P_MASSA, P_BEATS, P_DARK, P_BREATH,                 /* HOME: the four mac
        P_DRIVE, P_TONE, P_CAB, P_LEVEL,                    /* FX */
        P_ATTACK, P_RELEASE,                                /* ENV */
        P_RATE, P_TOPITCH, P_TOCUT, P_TOLEVEL,              /* LFO */
+       P_CHORUS, P_REVERB,                                 /* FX, SHOEGAZE (the chorus and the reverb) */
        NP };
 #define P_ROOM 40                /* values room in a stored sound: NP can grow to it without moving the bank */
 
 /* the settings' values (stored: append only) */
 enum { G_CH, G_TRS, G_VOL, G_OCT, G_SLOT, G_SPEED, G_DIR, G_DECAY, G_WEAR, G_BRAKE,
        G_DT, G_DFB, G_DMIX, G_DHEADS, G_DWOB, G_DDULL,     /* the tape echo: TIME, REPEATS, MIX, HEADS (a mask), WOBBLE, DULL */
+       G_PITCH, G_LOCK,                                    /* the cassette: pitch apart from speed */
+       G_DGLIDE, G_DDRV,                                   /* the echo's motor and its drive */
+       G_GMIX, G_GSIZE, G_GDENS, G_GPITCH, G_GSCAT, G_GREV, G_GFB,   /* the grains */
+       G_SCALE, G_ROOT, G_CHORD, G_LOW,                    /* SCL: the scale of the keys, the chords */
+       G_MODE,                                             /* HARSH or SHOEGAZE */
        NG };
-#define G_ROOM 32
+#define G_ROOM 48
 
 #define NSND 16                  /* sound slots */
 #define NAME_LEN 12
 enum { ENG_SAW, ENG_FM };
 
 /* how a value reads on the screen */
-enum { F_NUM, F_SEC10, F_SUBOCT, F_RATIO, F_CAB, F_HZ, F_CH, F_ONOFF, F_SPEED, F_DIR, F_OCT, F_MS, F_HEADS };
+enum { F_NUM, F_SEC10, F_SUBOCT, F_RATIO, F_CAB, F_HZ, F_CH, F_ONOFF, F_SPEED, F_DIR, F_OCT, F_MS, F_HEADS, F_PITCH,
+       F_MODE, F_SCALE, F_ROOT, F_CHORD, F_LOW, F_GMS };
+enum { MODE_HARSH, MODE_SHOE };
 
 typedef struct {
     const char *label;
@@ -52,6 +60,7 @@ static const par_t SP[NP] = {
     [P_RATE] = {"RATE", 1, 100, 10, F_HZ},         /* 0.01 .. 1.00 Hz */
     [P_TOPITCH] = {"TO PITCH", 0, 100, 20, F_NUM}, [P_TOCUT] = {"TO CUTOFF", 0, 100, 40, F_NUM},
     [P_TOLEVEL] = {"TO LEVEL", 0, 100, 20, F_NUM},
+    [P_CHORUS] = {"CHORUS", 0, 100, 0, F_NUM},     [P_REVERB] = {"REVERB", 0, 100, 0, F_NUM},
 };
 
 static const par_t GP[NG] = {
@@ -71,6 +80,17 @@ static const par_t GP[NG] = {
     [G_DHEADS] = {"HEADS", 1, 7, 3, F_HEADS},      /* a mask: 1, 2, 4 = the heads at D, 2 D, 3 D */
     [G_DWOB] = {"WOBBLE", 0, 100, 25, F_NUM},
     [G_DDULL] = {"DULL", 0, 100, 40, F_NUM},
+    [G_PITCH] = {"PITCH", -12, 12, 0, F_PITCH},    /* semitones, on top of SPEED (apart from it with LOCK) */
+    [G_LOCK] = {"LOCK", 0, 1, 0, F_ONOFF},         /* ON: SPEED changes the time only, the pitch stays */
+    [G_DGLIDE] = {"GLIDE", 0, 100, 30, F_NUM},     /* the echo's motor: 0.15 s .. 6 s across TIME's range */
+    [G_DDRV] = {"TAPE DRIVE", 0, 100, 0, F_NUM},
+    [G_GMIX] = {"GRAINS", 0, 100, 0, F_NUM},       /* 0: off */
+    [G_GSIZE] = {"SIZE", 1, 100, 40, F_GMS},       [G_GDENS] = {"DENSITY", 1, 100, 30, F_NUM},
+    [G_GPITCH] = {"GRAIN PITCH", 0, 100, 0, F_NUM}, [G_GSCAT] = {"SCATTER", 0, 100, 40, F_NUM},
+    [G_GREV] = {"REVERSE", 0, 100, 20, F_NUM},     [G_GFB] = {"GRAIN FEED", 0, 100, 0, F_NUM},
+    [G_SCALE] = {"SCALE", 0, 6, 0, F_SCALE},       [G_ROOT] = {"ROOT", 0, 11, 0, F_ROOT},
+    [G_CHORD] = {"CHORD", 0, 7, 0, F_CHORD},       [G_LOW] = {"LOW ROOT", 0, 2, 0, F_LOW},
+    [G_MODE] = {"MODE", 0, 1, 0, F_MODE},
 };
 
 typedef struct {
@@ -82,7 +102,8 @@ typedef struct {
 
 static struct {
     snd_t s[NSND];
-} bank;                          /* stored in slot 1 */
+} bankm[2];                      /* the sounds of each mode: HARSH in slot 1, SHOEGAZE in slot 2 */
+#define bank (bankm[set.g[G_MODE] ? 1 : 0])   /* the bank of the mode playing */
 
 static struct {
     uint8_t ng, pad[3];          /* values stored in g[] */
@@ -93,6 +114,7 @@ static snd_t cur;                /* the sound playing (the edit buffer): PRESETS
 
 #define SLOT_SET 0u
 #define SLOT_BANK 1u
+#define SLOT_BANK2 2u
 
 static int16_t clamp16(int32_t v, int32_t lo, int32_t hi) { return (int16_t)(v < lo ? lo : v > hi ? hi : v); }
 
@@ -123,7 +145,27 @@ static const factory_t FACTORY[NSND - 1] = {
     {"HUM", ENG_SAW, {10, 5, 60, 20, 1, 60, 1, 50, 1, 30, 40, 10, 40, 1, 80, 20, 40, 8, 10, 30, 20}},
 };
 
-static void snd_default(snd_t *s, uint32_t slot)
+/* SHOEGAZE's fifteen: the same order of values, then CHORUS and REVERB. Wide detuned layers, a bright open DARK, a
+ * light fuzz, long swells, the chorus and the reverb doing the rest. */
+static const factory_t FACTORY_S[NSND - 1] = {
+    {"WALL OF HAZE", ENG_SAW, {30, 70, 25, 40, 3, 30, 1, 50, 1, 30, 40, 45, 65, 0, 80, 40, 100, 8, 20, 30, 30, 70, 80}},
+    {"SLOW BLOOM", ENG_SAW, {20, 55, 15, 50, 3, 20, 1, 40, 1, 30, 40, 30, 70, 0, 80, 80, 120, 6, 30, 40, 40, 60, 90}},
+    {"PINK DUST", ENG_FM, {25, 40, 20, 40, 2, 20, 1, 50, 2, 20, 35, 30, 75, 0, 80, 40, 90, 10, 20, 30, 30, 80, 70}},
+    {"LILAC", ENG_SAW, {15, 85, 10, 60, 2, 10, 1, 30, 1, 30, 40, 20, 80, 0, 75, 50, 110, 7, 40, 50, 50, 90, 80}},
+    {"GLASS FUZZ", ENG_SAW, {45, 60, 30, 30, 3, 25, 1, 50, 1, 30, 40, 75, 60, 0, 80, 20, 80, 12, 20, 30, 20, 50, 60}},
+    {"SUNRISE", ENG_FM, {10, 30, 5, 70, 2, 10, 1, 50, 3, 10, 50, 10, 85, 0, 75, 100, 150, 5, 50, 60, 60, 70, 100}},
+    {"TREMOLO SKY", ENG_SAW, {30, 50, 20, 90, 3, 20, 1, 50, 1, 30, 40, 40, 70, 0, 80, 40, 80, 40, 30, 20, 100, 60, 70}},
+    {"DEEP BLUE", ENG_SAW, {55, 45, 45, 30, 3, 70, 2, 50, 1, 30, 40, 50, 55, 0, 80, 60, 120, 6, 20, 30, 30, 60, 90}},
+    {"STATIC LOVE", ENG_FM, {35, 70, 25, 50, 2, 30, 1, 50, 2, 40, 55, 60, 65, 0, 80, 30, 70, 14, 30, 40, 30, 70, 60}},
+    {"SATIN", ENG_SAW, {10, 90, 10, 40, 3, 10, 1, 20, 1, 30, 40, 15, 85, 0, 75, 60, 100, 9, 20, 30, 40, 100, 90}},
+    {"VELVET NOISE", ENG_SAW, {70, 80, 35, 60, 3, 40, 1, 80, 1, 30, 40, 85, 55, 0, 80, 30, 90, 20, 40, 50, 30, 80, 80}},
+    {"DREAMS", ENG_FM, {20, 35, 15, 60, 2, 15, 1, 50, 4, 20, 45, 20, 80, 0, 75, 90, 140, 8, 40, 50, 50, 90, 100}},
+    {"HALO", ENG_SAW, {15, 60, 5, 40, 3, 15, 1, 50, 1, 30, 40, 25, 90, 0, 70, 70, 130, 7, 30, 40, 40, 80, 100}},
+    {"MELT", ENG_SAW, {40, 100, 30, 80, 3, 30, 1, 0, 1, 30, 40, 55, 60, 0, 80, 40, 100, 25, 100, 50, 40, 70, 80}},
+    {"AFTERGLOW", ENG_SAW, {25, 65, 20, 50, 3, 25, 1, 50, 1, 30, 40, 35, 70, 0, 80, 120, 200, 4, 20, 30, 30, 80, 100}},
+};
+
+static void snd_default_m(snd_t *s, uint32_t slot, uint32_t mode)
 {
     static const char base[] = "INIT ";
     uint32_t i;
@@ -137,8 +179,15 @@ static void snd_default(snd_t *s, uint32_t slot)
     s->np = NP;
     for (i = 0; i < P_ROOM; i++)
         s->p[i] = i < NP ? SP[i].def : 0;
+    if (mode == MODE_SHOE && slot == 0u) {       /* SHOEGAZE's INIT: a light fuzz, a little chorus and reverb */
+        s->p[P_DRIVE] = 30;
+        s->p[P_CAB] = 0;
+        s->p[P_CHORUS] = 50;
+        s->p[P_REVERB] = 50;
+        s->p[P_DARK] = 20;
+    }
     if (slot >= 1u && slot < NSND) {             /* a factory sound */
-        const factory_t *f = &FACTORY[slot - 1u];
+        const factory_t *f = mode == MODE_SHOE ? &FACTORY_S[slot - 1u] : &FACTORY[slot - 1u];
         for (i = 0; i < NAME_LEN; i++)
             s->name[i] = ' ';
         for (i = 0; i < NAME_LEN && f->name[i]; i++)
@@ -149,11 +198,13 @@ static void snd_default(snd_t *s, uint32_t slot)
     }
 }
 
-static void snd_check(snd_t *s, uint32_t slot)   /* a sound read from flash: keep what is valid, default the rest */
+static void snd_default(snd_t *s, uint32_t slot) { snd_default_m(s, slot, (uint32_t)set.g[G_MODE]); }
+
+static void snd_check(snd_t *s, uint32_t slot, uint32_t mode)   /* a sound read from flash: keep what is valid, default the rest */
 {
     snd_t d;
     uint32_t i, n = s->np < NP ? s->np : NP, ok = 1;
-    snd_default(&d, slot);
+    snd_default_m(&d, slot, mode);
     for (i = 0; i < NAME_LEN; i++)
         ok &= s->name[i] >= ' ' && s->name[i] <= '~';
     if (!ok)
@@ -178,7 +229,7 @@ static void set_default(void)
 static void data_load(void)      /* app_init: defaults, then the records over them */
 {
     int32_t n;
-    uint32_t i, k;
+    uint32_t i, k, m;
     set_default();
     n = store_load(SLOT_SET, APP_ID, &set, sizeof set);
     if (n < 4) {                                 /* none, damaged, or another app's */
@@ -192,13 +243,15 @@ static void data_load(void)      /* app_init: defaults, then the records over th
                 set.g[i] = i < NG ? GP[i].def : 0;
         set.ng = NG;
     }
-    n = store_load(SLOT_BANK, APP_ID, &bank, sizeof bank);
-    k = n > 0 ? (uint32_t)n / sizeof(snd_t) : 0u;   /* whole sounds stored */
-    for (i = 0; i < NSND; i++) {
-        if (i < k)
-            snd_check(&bank.s[i], i);
-        else
-            snd_default(&bank.s[i], i);
+    for (m = 0; m < 2u; m++) {
+        n = store_load(m ? SLOT_BANK2 : SLOT_BANK, APP_ID, &bankm[m], sizeof bankm[m]);
+        k = n > 0 ? (uint32_t)n / sizeof(snd_t) : 0u;   /* whole sounds stored */
+        for (i = 0; i < NSND; i++) {
+            if (i < k)
+                snd_check(&bankm[m].s[i], i, m);
+            else
+                snd_default_m(&bankm[m].s[i], i, m);
+        }
     }
     cur = bank.s[set.g[G_SLOT]];
 }
@@ -208,7 +261,7 @@ static int data_save(uint32_t slot)              /* main loop, ~100 ms (two reco
     int r;
     bank.s[slot] = cur;
     set.g[G_SLOT] = (int16_t)slot;
-    r = store_save(SLOT_BANK, APP_ID, &bank, sizeof bank);
+    r = store_save(set.g[G_MODE] ? SLOT_BANK2 : SLOT_BANK, APP_ID, &bank, sizeof bank);   /* (the mode playing) */
     r |= store_save(SLOT_SET, APP_ID, &set, sizeof set);
     return r;
 }
@@ -252,6 +305,12 @@ static void fixed2(char *b, int32_t v, uint32_t dec)   /* v / 10^dec with dec de
     *b = 0;
 }
 
+static void note_pc(char *b, uint32_t pc)        /* a pitch class: "C", "C#" */
+{
+    static const char *const N[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    str_cpy(b, N[pc % 12u], 4);
+}
+
 static void par_text(char *b, uint32_t n, int32_t v, uint32_t fmt)   /* n >= 16 */
 {
     static const char *const CAB[3] = {"OFF", "4X12", "DARK"};
@@ -271,6 +330,21 @@ static void par_text(char *b, uint32_t n, int32_t v, uint32_t fmt)   /* n >= 16 
         break;
     case F_DIR: str_cpy(b, v ? "REVERSE" : "FORWARD", n); break;
     case F_MS: num(b, dly_ms10(v) / 10); str_cat(b, " MS", n); break;
+    case F_GMS: num(b, 20 + v * 6); str_cat(b, " MS", n); break;
+    case F_PITCH: if (v > 0) { b[0] = '+'; num(b + 1, v); } else num(b, v); str_cat(b, " ST", n); break;
+    case F_MODE: str_cpy(b, v ? "SHOEGAZE" : "HARSH", n); break;
+    case F_SCALE: {
+        static const char *const SC[7] = {"CHROMA", "MINOR", "PHRYGIAN", "LOCRIAN", "HARM MIN", "PENT MIN", "WHOLE"};
+        str_cpy(b, SC[v < 0 || v > 6 ? 0 : v], n);
+        break;
+    }
+    case F_ROOT: note_pc(b, (uint32_t)v); break;
+    case F_CHORD: {
+        static const char *const CH[8] = {"SINGLE", "POWER", "POWER+8", "SUS4", "MINOR", "TRITONE", "DOOM", "OCTAVES"};
+        str_cpy(b, CH[v < 0 || v > 7 ? 0 : v], n);
+        break;
+    }
+    case F_LOW: str_cpy(b, v == 2 ? "-2 OCT" : v == 1 ? "-1 OCT" : "OFF", n); break;
     case F_HEADS: {
         uint32_t k, m = 0;
         for (k = 0; k < 3u; k++)

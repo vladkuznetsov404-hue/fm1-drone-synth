@@ -1000,6 +1000,7 @@ static void scope_shot(void)
     press(B_ARP);
     run_frames(240);                             /* ~4 s: the echoes fill the tape */
     host_png("build/shots/delay_drone.png");
+    set.g[G_DGLIDE] = 90;
     set.g[G_DT] = 5;
     run_frames(45);
     host_png("build/shots/delay_glide.png");
@@ -1229,6 +1230,7 @@ static void dly_setup(int t, int fb, int mix, int heads, int wob, int dull)
     set.g[G_DHEADS] = (int16_t)heads;
     set.g[G_DWOB] = (int16_t)wob;
     set.g[G_DDULL] = (int16_t)dull;
+    set.g[G_DGLIDE] = 100;                       /* (the slowest motor: the bend tests below were made for it) */
 }
 
 static void dly_run(const int32_t *in, uint32_t frames, int32_t *o)   /* whole blocks through dly_process */
@@ -1436,6 +1438,144 @@ static void delay_audio(void)
         }
     }
 
+    /* GLIDE: the motor's speed. 0: across the whole range in ~0.15 s (a fast turn is followed at once); 100: ~6 s */
+    {
+        int32_t tgt;
+        dly_setup(100, 0, 100, 1, 0, 0);
+        memset(dl_in, 0, (DN + 64u) * sizeof dl_in[0]);
+        sine_in(0, 88200, 440.0, 6000.0);
+        set.g[G_DGLIDE] = 0;
+        dly_run(dl_in, 22050, dl_out);
+        set.g[G_DT] = 0;
+        tgt = dly_ms10(0) * DL_Q;
+        dly_run(dl_in + 22050u, 13230, dl_out + 2u * 22050u);                  /* 0.3 s */
+        check("GLIDE 0: TIME 100 -> 0 across the whole range is done in 0.3 s", abs(dl.d - tgt) < DL_Q * 40);
+        dly_setup(100, 0, 100, 1, 0, 0);
+        set.g[G_DGLIDE] = 50;
+        dly_run(dl_in, 22050, dl_out);
+        set.g[G_DT] = 0;
+        dly_run(dl_in + 22050u, 13230, dl_out + 2u * 22050u);
+        check("GLIDE 50: the same turn is half way after 0.3 s, and done in ~2 s",
+              dl.d - tgt > DL_Q * 2000 && dl.d - tgt < DL_Q * 8000);
+        dly_run(dl_in + 35280u, 52920, dl_out + 2u * 35280u);                  /* +1.2 s */
+        check("GLIDE 50: ... and there after 1.5 s in all", abs(dl.d - tgt) < DL_Q * 60);
+        dly_setup(100, 0, 100, 1, 0, 0);
+        set.g[G_DGLIDE] = 0;
+        dly_run(dl_in, 22050, dl_out);
+        set.g[G_DT] = 0;
+        dly_run(dl_in + 22050u, 1280, dl_out + 2u * 22050u);                   /* a fast turn: 30 ms later it has gone */
+        check("GLIDE 0: 30 ms into a full turn the tape is already moving fast (not the old 6 s crawl)",
+              abs(dl.v_pub) > 500000);
+        pk = 0;
+        for (d = 0; d < 1280u; d++)
+            pk = abs(dl_out[2u * (22050u + d)]) > pk ? abs(dl_out[2u * (22050u + d)]) : pk;
+        check("GLIDE 0: the throw stays bounded", pk < 40000);
+    }
+
+    /* TAPE DRIVE: the saturation takes the crest off a loud sine */
+    {
+        double c0, c1;
+        uint32_t k;
+        int32_t blk[2u * CTL];
+        for (k = 0; k < 2u; k++) {
+            dly_setup(10, 0, 100, 1, 0, 0);
+            set.g[G_DDRV] = k ? 100 : 0;
+            memset(dl_in, 0, (DN + 64u) * sizeof dl_in[0]);
+            sine_in(0, 88200, 330.0, 20000.0);
+            dly_run(dl_in, 88200, dl_out);
+            pk = 0;
+            for (d = 66150u; d < 88200u; d++)    /* (the left channel: the echo alone) */
+                pk = abs(dl_out[2u * d]) > pk ? abs(dl_out[2u * d]) : pk;
+            if (k)
+                c1 = pk / rms(dl_out + 2u * 66150u, 22050);
+            else
+                c0 = pk / rms(dl_out + 2u * 66150u, 22050);
+        }
+        (void)blk;
+        check("TAPE DRIVE 100 flattens a loud sine (crest 0.08 lower), 0 leaves it (about 1.41)",
+              c1 < c0 - 0.08 && c0 > 1.39);
+    }
+
+    /* FREEZE: the loop holds what it has */
+    {
+        double a, b;
+        dly_setup(10, 0, 100, 1, 0, 0);
+        memset(dl_in, 0, (DN + 64u) * sizeof dl_in[0]);
+        sine_in(0, 22050, 220.0, 8000.0);
+        dly_run(dl_in, 22050, dl_out);
+        dl.freeze = 1;
+        dly_run(dl_in + 22050u, 220500, dl_out + 2u * 22050u);                 /* 5 s of silence in */
+        a = rms(dl_out + 2u * 66150u, 22050);
+        b = rms(dl_out + 2u * 220500u, 22050);
+        check("FREEZE: the held loop still sounds after 5 s, at about its level (REPEATS 0)", a > 800.0 && b > 0.5 * a);
+        dl.freeze = 0;
+        dly_run(dl_in + 242550u, 66150, dl_out + 2u * 242550u);
+        check("FREEZE off: REPEATS 0 lets it end (a second later only the one-pole's last bits are left)",
+              peak(dl_out + 2u * (242550u + 44100u), 22050) < 20);
+    }
+
+    /* GRAINS */
+    {
+        uint32_t k, live = 0;
+        double r2, e1;
+        dly_setup(45, 0, 0, 1, 0, 0);
+        set.g[G_GMIX] = 100;
+        set.g[G_GSIZE] = 50;
+        set.g[G_GDENS] = 50;
+        set.g[G_GSCAT] = 0;
+        set.g[G_GREV] = 0;
+        set.g[G_GPITCH] = 0;
+        memset(dl_in, 0, (DN + 64u) * sizeof dl_in[0]);
+        sine_in(0, 44100, 440.0, 8000.0);
+        dly_run(dl_in, 132300, dl_out);
+        r2 = pitch(dl_out + 2u * 20000u, 20000);
+        e1 = rms(dl_out + 2u * 20000u, 20000);
+        check("GRAINS (0 st, forward): a 440 Hz sine comes back as 440 Hz (+-6)", r2 > 434.0 && r2 < 446.0);
+        check("GRAINS: audible, and not louder than a few input levels", e1 > 800.0 && e1 < 30000.0);
+        check("GRAINS: they play on after the input ends (0.04 .. 0.14 s after: still sounding)",
+              rms(dl_out + 2u * 46000u, 4000) > 300.0);
+        for (k = 0; k < 6u; k++)
+            live += (dl.gmask >> k) & 1u;
+        check("GRAINS: at most six live", live <= DL_NG);
+        set.g[G_GMIX] = 0;
+        dly_run(dl_in + 132300u, 264600 - 132300u, dl_out + 2u * 132300u);
+        check("GRAINS off and a quiet input: after the line's length everything is cleared", !dl.dirty && !dl.gmask);
+
+        dly_setup(45, 0, 0, 1, 0, 0);                          /* the same, backwards */
+        set.g[G_GMIX] = 100;
+        set.g[G_GSIZE] = 20;
+        set.g[G_GDENS] = 50;
+        set.g[G_GSCAT] = 40;
+        set.g[G_GREV] = 100;
+        sine_in(0, 44100, 440.0, 8000.0);
+        dly_run(dl_in, 88200, dl_out);
+        r2 = pitch(dl_out + 2u * 20000u, 20000);
+        check("GRAINS REVERSE 100: a sine reversed is the same sine (440 Hz +-8)", r2 > 432.0 && r2 < 448.0);
+
+        dly_setup(45, 0, 0, 1, 0, 0);                          /* +12 st only: GRAIN PITCH 25 is {0, +12} */
+        set.g[G_GMIX] = 100;
+        set.g[G_GSIZE] = 20;
+        set.g[G_GDENS] = 100;
+        set.g[G_GSCAT] = 0;
+        set.g[G_GREV] = 0;
+        set.g[G_GPITCH] = 25;
+        sine_in(0, 44100, 440.0, 8000.0);
+        dly_run(dl_in, 88200, dl_out);
+        e1 = 0;
+        for (k = 0; k < 10u; k++) {                            /* the pitch of short stretches: 440 and 880 both turn up */
+            r2 = pitch(dl_out + 2u * (12000u + 3000u * k), 2800);
+            e1 += r2 > 800.0 && r2 < 960.0;
+        }
+        check("GRAIN PITCH 25: some grains are an octave up (880 Hz turns up in the output)", e1 >= 1.0);
+        set.g[G_GFB] = 100;
+        set.g[G_GMIX] = 100;
+        set.g[G_GPITCH] = 100;
+        set.g[G_GREV] = 50;
+        dly_run(dl_in, 396000, dl_out);
+        pk = peak(dl_out, 396000);
+        check("GRAIN FEED 100 with everything on: bounded (< 80 000)", pk < 80000);
+    }
+
     /* anything thrown at it: noise, every knob jumping, all heads, REPEATS 100 (run under ASan / UBSan too) */
     {
         uint32_t seed = 99, k, bl;
@@ -1449,6 +1589,16 @@ static void delay_audio(void)
                 set.g[G_DHEADS] = (int16_t)(1 + (seed >> 8 & 255u) % 7u);
                 set.g[G_DWOB] = (int16_t)((seed >> 4 & 255u) % 101u);
                 set.g[G_DDULL] = (int16_t)((seed >> 12 & 255u) % 101u);
+                set.g[G_DGLIDE] = (int16_t)((seed >> 20 & 255u) % 101u);
+                set.g[G_DDRV] = (int16_t)((seed >> 6 & 255u) % 101u);
+                set.g[G_GMIX] = (int16_t)((seed >> 3 & 255u) % 101u);
+                set.g[G_GSIZE] = (int16_t)(1 + (seed >> 10 & 255u) % 100u);
+                set.g[G_GDENS] = (int16_t)(1 + (seed >> 14 & 255u) % 100u);
+                set.g[G_GPITCH] = (int16_t)((seed >> 18 & 255u) % 101u);
+                set.g[G_GSCAT] = (int16_t)((seed >> 22 & 255u) % 101u);
+                set.g[G_GREV] = (int16_t)((seed >> 2 & 255u) % 101u);
+                set.g[G_GFB] = (int16_t)((seed >> 9 & 255u) % 101u);
+                dl.freeze = (uint8_t)(seed >> 5 & 1u);
             }
             for (k = 0; k < CTL; k++) {
                 seed = seed * 1664525u + 1013904223u;
