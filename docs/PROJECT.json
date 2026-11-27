@@ -1,0 +1,16 @@
+{
+  "name": "MASSA",
+  "title": "Massa",
+  "description": "A latching drone synthesizer for the M-VAVE FM-1: detuned saw or feedback-FM layers, fuzz and a 4x12 cabinet, and a lo-fi cassette looper.",
+  "kind": "synth",
+  "version": "0.1",
+  "authors": "Vlad Kuznetsov",
+  "year": 2026,
+  "app_id": "0x56D5141F",
+  "features": {
+    "trs_midi": true,
+    "ci": true,
+    "graphify": true
+  },
+  "made": "2026-11-27"
+}
