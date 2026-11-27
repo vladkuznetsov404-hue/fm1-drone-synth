@@ -415,6 +415,28 @@ static int32_t peak(const int32_t *b, uint32_t frames)
     return m;
 }
 
+static double level_at(const int32_t *b, uint32_t frames, double hz)   /* Goertzel: the amplitude at hz, left */
+{
+    double w = 2.0 * M_PI * hz / FS, c = 2.0 * cos(w), s1 = 0, s2 = 0, s0;
+    uint32_t i;
+    for (i = 0; i < frames; i++) {
+        s0 = b[2u * i] + c * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    return 2.0 * sqrt(s1 * s1 + s2 * s2 - c * s1 * s2) / frames;
+}
+
+static double band_above(const int32_t *b, uint32_t frames, double f0, double f1, double step)   /* peak level */
+{
+    double m = 0, f;
+    for (f = f0; f < f1; f += step) {
+        double l = level_at(b, frames, f);
+        m = l > m ? l : m;
+    }
+    return m;
+}
+
 static int same_lr(const int32_t *b, uint32_t frames)
 {
     uint32_t i;
@@ -433,6 +455,8 @@ static void sound(void)
     host_render(buf, 1024);
     check("silence with nothing latched", peak(buf, 1024) == 0);
     set.g[G_OCT] = 0;                            /* key 0 = F3, 174.61 Hz */
+    cur.p[P_LAYERS] = 1;                         /* the latch, ramps and MIDI checks on one plain saw, no sub */
+    cur.p[P_SUB] = 0;
 
     cur.p[P_ATTACK] = 0;                         /* the shortest swell: ~6 ms, still no click */
     fm1_in.notes = 1u;
@@ -518,6 +542,96 @@ static void sound(void)
     check("app_audio_stop: silent at once, every note forgotten", peak(buf, 1024) == 0 && n_held() == 0u);
 }
 
+/* The SAW drone engine (milestone 2): the layers' detune from BEATS and SPREAD CURVE, the sub and its octave, the
+ * polyBLEP, the levels. Measured on one F3 (174.61 Hz) over a second (1 Hz resolution, Goertzel). */
+static void engine(void)
+{
+    const uint32_t S = BLOCKS(FS);
+    const double F = 174.614, UP40 = F * pow(2.0, 40.0 / 1200.0), DN40 = F / pow(2.0, 40.0 / 1200.0);
+    double c, u, d, a1, a2;
+    int32_t pk;
+    host_nor_erase();
+    power_cycle();
+    set.g[G_OCT] = 0;
+    cur.p[P_ATTACK] = 0;
+    cur.p[P_SUB] = 0;
+    cur.p[P_LAYERS] = 3;
+    cur.p[P_BEATS] = 100;
+    cur.p[P_CURVE] = 0;
+    tap_key(0);
+    host_render(buf, S);                         /* settle */
+    host_render(buf, S);
+    c = level_at(buf, S, F); u = level_at(buf, S, UP40); d = level_at(buf, S, DN40);
+    check("3 layers, BEATS 100: the note and +-40 cents, about equal", c > 1500 && u > c * 0.7 && d > c * 0.7 &&
+          u < c * 1.4 && d < c * 1.4);
+    cur.p[P_LAYERS] = 2;
+    host_render(buf, S); host_render(buf, S);
+    c = level_at(buf, S, F);
+    u = level_at(buf, S, F * pow(2.0, 20.0 / 1200.0));
+    d = level_at(buf, S, F / pow(2.0, 20.0 / 1200.0));
+    check("2 layers, BEATS 100: +-20 cents, nothing at the note itself", u > 1500 && d > 1500 && c < u / 4);
+    cur.p[P_LAYERS] = 3;
+    cur.p[P_BEATS] = 0;
+    host_render(buf, S); host_render(buf, S);
+    c = level_at(buf, S, F); u = level_at(buf, S, UP40);
+    check("BEATS 0: the layers in unison (all at the note, none at +40 c)", c > 1500 && u < c / 10);
+    cur.p[P_BEATS] = 50;
+    cur.p[P_CURVE] = 0;                          /* even steps: half the knob, half the spread (20 c) */
+    host_render(buf, S); host_render(buf, S);
+    a1 = level_at(buf, S, F * pow(2.0, 20.0 / 1200.0));
+    cur.p[P_CURVE] = 100;                        /* cubic: half the knob, an eighth of the spread (5 c) */
+    host_render(buf, S); host_render(buf, S);
+    a2 = level_at(buf, S, F * pow(2.0, 20.0 / 1200.0));
+    check("SPREAD CURVE 0 -> 100 at BEATS 50: the spread falls from 20 c to 5 c", a1 > 1500 && a2 < a1 / 3);
+
+    cur.p[P_BEATS] = 0;
+    cur.p[P_LAYERS] = 1;
+    cur.p[P_SUB] = 0;
+    host_render(buf, S); host_render(buf, S);
+    a1 = level_at(buf, S, F / 2.0);
+    cur.p[P_SUB] = 100;
+    cur.p[P_SUBOCT] = 1;
+    host_render(buf, S); host_render(buf, S);
+    a2 = level_at(buf, S, F / 2.0);
+    check("SUB LEVEL 0 -> 100, one octave: a strong sine an octave down", a1 < 50 && a2 > SUB_AMP * 0.8 &&
+          a2 < SUB_AMP * 1.15 && level_at(buf, S, F / 4.0) < 50);
+    check("the sub is a sine (its 3rd harmonic small)", level_at(buf, S, 3.0 * F / 2.0) < a2 / 10);
+    cur.p[P_SUBOCT] = 2;
+    host_render(buf, S); host_render(buf, S);
+    check("SUB OCTAVE 2: two octaves down", level_at(buf, S, F / 4.0) > SUB_AMP * 0.8 && level_at(buf, S, F / 2.0) < 50);
+    cur.p[P_SUB] = 0;
+
+    /* polyBLEP: a high note's aliases. C8 (4186 Hz, over MIDI): its 6th harmonic (25 116 Hz) folds to 18 984 Hz; a
+     * naive saw has it at 1/6 of the fundamental's level, the BLEP at ~1/20 (a 2-sample BLEP is weakest this high;
+     * at drone pitches it does far better). The check sits between the two: a naive saw fails it. */
+    tap_key(0);
+    host_render(buf, S); host_render(buf, S); host_render(buf, S);
+    host_midi(0x90, 108, 100);
+    host_render(buf, S); host_render(buf, S);
+    a1 = level_at(buf, S, 4186.01);
+    a2 = level_at(buf, S, 44100.0 - 6.0 * 4186.01);
+    check("polyBLEP: C8's folded 6th harmonic well below a naive saw's 1/6 (< 1/12)", a1 > 3000 && a2 < a1 / 12);
+    host_midi(0x90, 108, 100);
+    host_render(buf, S); host_render(buf, S);
+
+    cur.p[P_LAYERS] = 3;                         /* the loudest sound: 3 layers at full spread and the sub */
+    cur.p[P_BEATS] = 100;
+    cur.p[P_SUB] = 100;
+    cur.p[P_SUBOCT] = 1;
+    tap_key(0);
+    host_render(buf, S); host_render(buf, S);
+    pk = peak(buf, S);
+    check("one note, 3 layers and the sub: louder than one saw, well below full scale", pk > VAMP && pk < 20000);
+    tap_key(3); tap_key(7); tap_key(10);
+    host_render(buf, S); host_render(buf, S);
+    check("four such notes: summed, never past full scale", peak(buf, S) > pk && peak(buf, S) <= 32767);
+    cur.p[P_BEATS] = 20;                         /* a tuning change while droning: no gap */
+    host_render(buf, 64);
+    check("BEATS turned while droning: the sound goes on", peak(buf, 64) > VAMP / 2);
+    app_audio_stop();
+    host_render(buf, 64);
+}
+
 int main(void)
 {
     if (system("mkdir -p build/shots"))
@@ -526,6 +640,7 @@ int main(void)
     controls();
     persistence();
     sound();
+    engine();
     puts(failed ? "APP TEST FAILED" : "app test passed");
     return failed ? 1 : 0;
 }

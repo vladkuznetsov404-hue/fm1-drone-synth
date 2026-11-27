@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-only
  * Copyright (C) 2026 Vlad Kuznetsov */
-/* The sound (audio ISR), skeleton: the latch and four voices of one plain saw each, with the swell and release of
- * the sound's ENV values and the master volume. The detuned layers, the sub, the fuzz, the cabinet, DARK, BREATH,
- * the FM engine and the cassette come in the milestones of docs/SPEC.md; the latch and its rules are final here.
+/* The sound (audio ISR): the latch and four voices of the SAW drone engine (milestone 2 of docs/SPEC.md): per note
+ * 1..3 band-limited saws detuned by BEATS (SPREAD CURVE shapes the knob) and a sine sub one or two octaves down, with
+ * the swell and release of the sound's ENV values and the master volume. The fuzz, the cabinet, DARK, BREATH, the FM
+ * engine and the cassette come in the later milestones; the latch and its rules are final here.
  *
  * The latch: a key (or a MIDI note-on) whose note is not sounding starts it; the same note again releases it (the
  * release time); a note-off does nothing. At most NV notes: a fifth takes the oldest voice, which keeps its phase
@@ -10,10 +11,23 @@
  * note (silence_req), app_audio_stop silences at once (stop_req).
  *
  * Gains are Q24 (1 << 24 = full); ramps are a per-sample step computed once per note event (the one divide, in a
- * noinline function); the hot loop is a phase add, a multiply and an add per voice. */
+ * noinline function). The tuning of the layers (their increments and the reciprocals the saws' polyBLEP needs: the
+ * divides) is worked out in snd_tune, a noinline function, only when a note starts or a tuning value changes (a
+ * signature checked once per block). The hot loop per layer is a phase add, a shift and, in the one sample after
+ * the saw's wrap and the one before it (rarely: 2 of every 44 100 / f samples), the polyBLEP's two multiplies.
+ *
+ * The saws are band-limited with polyBLEP (a 2-sample polynomial step at the wrap): the naive saw's aliasing is
+ * small at drone pitches but grows up the keyboard and the fuzz of milestone 3 would make it louder. The sub is a
+ * parabolic sine (one multiply), a little warmer than a true sine. */
 #define NV 4u
 #define NOTE_KEY0 53u            /* note key 0 is F3 at octave 0 (hal/fm1_input.h fm1_in.notes) */
-#define VAMP 7000                /* one voice's saw peak, Q15: four at full sum to 28 000 */
+#define VAMP 7000                /* one voice's peak with one layer and no sub, Q15: four at full sum to 28 000 */
+#define NL 3u                    /* layers per note at most */
+#define SUB_AMP 4500             /* the sub's peak at SUB LEVEL 100, Q15 */
+#define BEATS_CENTS 40           /* BEATS 100: the outer layers 40 cents off (spec: ~1 c .. ~40 c) */
+/* the saws' level per layer for 1, 2, 3 layers: detuned saws rarely line up, so their sum is louder than one saw by
+ * about the square root of their number; these keep 2 and 3 layers near the loudness of one */
+static const int32_t LAYER_AMP[NL + 1u] = {0, VAMP, 4400, 3400};
 #define G_FULL (1 << 24)
 #define MIN_RAMP 256             /* samples (~6 ms): the shortest swell or release, no clicks at 0 s */
 
@@ -25,7 +39,10 @@ static const uint32_t OCT4_INC[12] = {25480119u, 26995246u, 28600467u, 30301139u
                                       36034330u, 38177043u, 40447168u, 42852281u, 45400411u, 48100060u};
 
 typedef struct {
-    uint32_t phase, inc, age;    /* age: when it started (snd.clock), the oldest is stolen */
+    uint32_t ph[NL], inc[NL];    /* the layers' phases and increments (2^32 = one cycle) */
+    uint32_t rinv[NL];           /* 2^31 / (inc >> 8): turns a phase near the wrap into the polyBLEP's x (Q15) */
+    uint32_t sph, sinc;          /* the sub */
+    uint32_t base, age;          /* base: the note's increment; age: when it started (snd.clock), the oldest is stolen */
     int32_t gain, step;          /* Q24; step per sample, + while rising, - while falling */
     uint8_t note, state, src;
 } voice_t;
@@ -37,6 +54,10 @@ static struct {
     volatile uint8_t silence_req;   /* main loop -> ISR (SCL): every note released */
     volatile uint8_t held[NV];   /* ISR -> screen and LEDs: the latched notes per voice (0 none; releasing: 0) */
     volatile uint8_t last_midi;  /* ISR -> screen: the last MIDI note-on taken (0: none yet) */
+    uint32_t tune_sig;           /* the tuning values snd_tune last used (BEATS, CURVE, LAYERS, SUB OCTAVE) */
+    int32_t off[NL];             /* the layers' detune, Q24 (an increment changes by inc * off >> 24) */
+    int32_t lamp, samp;          /* a layer's and the sub's level, Q15 */
+    uint8_t layers, subsh;       /* layers sounding; the sub's octave shift */
 } snd;
 
 static uint32_t note_inc(uint32_t n)             /* MIDI note -> phase increment */
@@ -49,6 +70,55 @@ static int32_t ramp_step(int32_t tenths)         /* a ramp of tenths of a second
 {
     int32_t len = tenths * (FS / 10);
     return G_FULL / (len < MIN_RAMP ? MIN_RAMP : len);
+}
+
+static uint32_t tune_sig(void)
+{
+    return (uint32_t)cur.p[P_BEATS] | (uint32_t)cur.p[P_CURVE] << 8 | (uint32_t)cur.p[P_LAYERS] << 16 |
+           (uint32_t)cur.p[P_SUBOCT] << 20 | (uint32_t)cur.p[P_SUB] << 24;
+}
+
+/* The detune of the layers from BEATS and SPREAD CURVE. b = BEATS / 100; the knob's shape is b at CURVE 0 (even
+ * steps) and b^3 at CURVE 100 (fine steps at the low end, where the slow beating lives), mixed in between; the outer
+ * layers sit at +-BEATS_CENTS times that. cents -> a ratio offset: 2^(c/1200) - 1 ~ c * ln 2 / 1200 (at 40 cents
+ * 0.27 cents off the true ratio, inaudible here), so off = c * 0.000577623 in Q24 = c * 9690.9. Layers: one at the
+ * note; two at +-half the spread (no centre: the beating is between them); three at the note and +-the spread. */
+static __attribute__((noinline)) void snd_spread(void)
+{
+    int32_t b = cur.p[P_BEATS] * 65536 / 100;   /* Q16 */
+    int32_t cube = (int32_t)((int64_t)b * b >> 16) * (int64_t)b >> 16;
+    int32_t shape = b + (int32_t)((int64_t)(cube - b) * cur.p[P_CURVE] / 100);
+    int32_t d = (int32_t)((int64_t)shape * BEATS_CENTS * 9691 >> 16);   /* Q24 ratio offset at full spread */
+    uint32_t n = (uint32_t)cur.p[P_LAYERS];
+    n = n < 1u ? 1u : n > NL ? NL : n;
+    snd.layers = (uint8_t)n;
+    snd.off[0] = n == 2u ? d / 2 : 0;
+    snd.off[1] = n == 2u ? -d / 2 : d;
+    snd.off[2] = -d;
+    snd.lamp = LAYER_AMP[n];
+    snd.samp = SUB_AMP * cur.p[P_SUB] / 100;
+    snd.subsh = cur.p[P_SUBOCT] >= 2 ? 2u : 1u;
+}
+
+static __attribute__((noinline)) void snd_tune(voice_t *v)   /* the layers and the sub from v->base */
+{
+    uint32_t l;
+    for (l = 0; l < NL; l++) {
+        uint32_t inc = (uint32_t)((int64_t)v->base + ((int64_t)v->base * snd.off[l] >> 24));
+        uint32_t q = inc >> 8;
+        v->inc[l] = inc;
+        v->rinv[l] = q ? 0x80000000u / q : 0x80000000u;
+    }
+    v->sinc = v->base >> snd.subsh;
+}
+
+static __attribute__((noinline)) void snd_retune(void)   /* a tuning value changed: every voice */
+{
+    uint32_t i;
+    snd.tune_sig = tune_sig();
+    snd_spread();
+    for (i = 0; i < NV; i++)
+        snd_tune(&snd.v[i]);
 }
 
 static __attribute__((noinline)) void snd_toggle(uint32_t note, uint32_t src)   /* one latch press */
@@ -83,10 +153,16 @@ static __attribute__((noinline)) void snd_toggle(uint32_t note, uint32_t src)   
                 pick = i;
             }
     v = &snd.v[pick];
-    if (v->state == V_OFF)
-        v->gain = 0;                             /* (phase and gain carry on in a stolen voice: no click) */
+    if (v->state == V_OFF) {                     /* (phase and gain carry on in a stolen voice: no click) */
+        v->gain = 0;
+        v->ph[0] = 0;                            /* the layers a third of a cycle apart: no phasey start */
+        v->ph[1] = 0x55555555u;
+        v->ph[2] = 0xAAAAAAAAu;
+        v->sph = 0;
+    }
     v->note = (uint8_t)note;
-    v->inc = note_inc(note);
+    v->base = note_inc(note);
+    snd_tune(v);
     v->src = (uint8_t)src;
     v->state = V_ON;
     v->step = ramp_step(cur.p[P_ATTACK]);
@@ -157,19 +233,39 @@ static void snd_render(int32_t *out, uint32_t n)
         snd_midi(pkt, src);
     if (snd.stop_req | snd.silence_req)          /* after the queue: what came before a stop is forgotten too */
         snd_requests();
+    if (tune_sig() != snd.tune_sig)              /* (also the first block: the signature starts at 0, never valid) */
+        snd_retune();
     for (j = 0; j < NV; j++) {
         voice_t *v = &snd.v[j];
-        uint32_t ph = v->phase, inc = v->inc;
-        int32_t g = v->gain, st = v->step, top = v->state == V_ON ? G_FULL : 0;
+        uint32_t nl = snd.layers, sph = v->sph, sinc = v->sinc, l;
+        int32_t g = v->gain, st = v->step, top = v->state == V_ON ? G_FULL : 0, lamp = snd.lamp, samp = snd.samp;
         if (v->state == V_OFF)
             continue;
         for (i = 0; i < n; i++) {
+            int32_t acc = 0, u, y;
             g += st;
             g = st > 0 ? (g > top ? top : g) : (g < 0 ? 0 : g);
-            ph += inc;
-            out[2u * i] += (((int32_t)(ph >> 16) - 32768) * VAMP >> 15) * (g >> 9) >> 15;
+            for (l = 0; l < nl; l++) {
+                uint32_t p = v->ph[l] += v->inc[l];
+                int32_t s = (int32_t)(p >> 16) - 32768, x;
+                if (p < v->inc[l]) {             /* just after the wrap: t / dt in Q15 */
+                    x = (int32_t)(((p >> 8) * v->rinv[l]) >> 16);
+                    s -= 2 * x - (x * x >> 15) - 32768;
+                } else if (p > ~v->inc[l]) {     /* just before it: (1 - t) / dt */
+                    x = (int32_t)((((0u - p) >> 8) * v->rinv[l]) >> 16);
+                    s -= (x * x >> 15) - 2 * x + 32768;
+                }
+                acc += s;
+            }
+            acc = acc * lamp >> 15;
+            sph += sinc;                         /* the sub: 4 u (1 - |u|) over the half cycles, u = phase */
+            u = (int16_t)(sph >> 16);
+            y = u * (32768 - (u < 0 ? -u : u)) >> 13;
+            y = y > 32767 ? 32767 : y;
+            acc += y * samp >> 15;
+            out[2u * i] += acc * (g >> 9) >> 15;
         }
-        v->phase = ph;
+        v->sph = sph;
         v->gain = g;
         if (v->state == V_REL && g == 0)
             v->state = V_OFF;

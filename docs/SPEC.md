@@ -75,8 +75,14 @@ Each page draws only what changed (the platform's lazy drawing).
 
 - 44.1 kHz, mono engine into a stereo output (both channels the same in v1).
 - Up to **4 latched notes**. Per note:
-  - **SAW** engine: 1..3 band-limited saws detuned by BEATS (cents scale from ~1 c to ~40 c), plus a sine sub one or
-    two octaves down.
+  - **SAW** engine (milestone 2, built): 1..3 saws band-limited with polyBLEP, plus a sine sub (a parabolic sine,
+    SUB LEVEL 0..100 up to ~0.64 of one saw's peak) one or two octaves down (SUB OCTAVE). BEATS sets the spread: the
+    outer layers at ±40 cents × shape, where shape is BEATS / 100 at SPREAD CURVE 0 (even steps) and its cube at
+    SPREAD CURVE 100 (fine steps at the low end, where the slow beating is), mixed in between; BEATS 0 is unison.
+    1 layer: at the note; 2: at ±half the spread (no centre, they beat against each other); 3: at the note and ±the
+    spread. A layer's level falls with their number (7000, 4400, 3400 of 32 767) so 2 and 3 layers sound about as
+    loud as one. New notes start their layers a third of a cycle apart (no phasey attack). The tuning is worked out
+    when a note starts or a tuning value changes, never per sample.
   - **FM** engine: 2-operator voices with operator feedback (feedback = a dirty saw-like tone), 1..2 detuned copies,
     plus the sine sub. The DX7 engine of the stock firmware is not used.
 - A shared chain after the voices: one-pole DC block → **fuzz** (asymmetric soft clip with a drive of up to ~40 dB,

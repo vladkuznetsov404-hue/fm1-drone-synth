@@ -42,7 +42,8 @@ static struct {
 static int ui_live(int32_t code)                 /* does this value reach the sound yet (no SOON tag) */
 {
     return code == P_ATTACK || code == P_RELEASE || code == C_G + G_CH || code == C_G + G_TRS ||
-           code == C_G + G_VOL;
+           code == C_G + G_VOL || code == P_BEATS || code == P_LAYERS || code == P_SUB || code == P_SUBOCT ||
+           code == P_CURVE;                     /* (milestone 2: the SAW engine) */
 }
 
 static int32_t cell(uint32_t page, uint32_t i)
