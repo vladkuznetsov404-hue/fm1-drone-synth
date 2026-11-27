@@ -3,8 +3,8 @@
 /* The sound (audio ISR): the latch and four voices of the SAW drone engine (milestone 2 of docs/SPEC.md): per note
  * 1..3 band-limited saws detuned by BEATS (SPREAD CURVE shapes the knob) and a sine sub one or two octaves down, with
  * the swell and release of the sound's ENV values and the master volume, into the chain of fx.c (the fuzz, the
- * cabinet, DARK), with BREATH's slow pitch drift (breath.c). The FM engine and the cassette come in the later
- * milestones; the latch and its rules are final here.
+ * cabinet, DARK), with BREATH's slow pitch drift (breath.c), and the cassette (tape.c). The FM engine comes in
+ * milestone 5; the latch and its rules are final here.
  *
  * The latch: a key (or a MIDI note-on) whose note is not sounding starts it; the same note again releases it (the
  * release time); a note-off does nothing. At most NV notes: a fifth takes the oldest voice, which keeps its phase
@@ -277,6 +277,7 @@ static void snd_render(int32_t *out, uint32_t n)
     for (j = 0; j < NV && snd.v[j].state == V_OFF; j++)
         ;
     fx_process(out, n, j < NV);                  /* the fuzz, the cabinet, DARK (fx.c) */
+    tape_process(out, n);                        /* the cassette: records the chain, plays back over it (tape.c) */
     for (i = 0; i < n; i++) {
         int32_t s = out[2u * i] * vol >> 8;
         s = s > 32767 ? 32767 : s < -32767 ? -32767 : s;

@@ -47,7 +47,9 @@ static int ui_live(int32_t code)                 /* does this value reach the so
            code == P_MASSA || code == P_DARK || code == P_DRIVE || code == P_TONE || code == P_CAB ||
            code == P_LEVEL ||                   /* (milestone 3: the fuzz, the cabinet, DARK) */
            code == P_BREATH || code == P_RATE || code == P_TOPITCH || code == P_TOCUT ||
-           code == P_TOLEVEL;                   /* (milestone 4: BREATH) */
+           code == P_TOLEVEL ||                 /* (milestone 4: BREATH) */
+           code == C_G + G_SPEED || code == C_G + G_DIR || code == C_G + G_DECAY || code == C_G + G_WEAR ||
+           code == C_G + G_BRAKE;               /* (milestones 6, 7: the cassette) */
 }
 
 static int32_t cell(uint32_t page, uint32_t i)
@@ -236,7 +238,7 @@ static uint16_t tape_col(void)
     return tape.st == TP_REC || tape.st == TP_DUB ? T_REC : tape.st == TP_PLAY ? T_THEME : T_MID;
 }
 
-#define TB_X 122                 /* HOME's tape line: TAPE, the state (EMPTY the widest, from x 40), the bar, SOON */
+#define TB_X 122                 /* HOME's tape line: TAPE, the state (EMPTY the widest, from x 40), the bar */
 #define TB_W 64
 
 static void draw_tape(uint32_t y)                /* HOME: the cassette's state and position */
@@ -248,7 +250,6 @@ static void draw_tape(uint32_t y)                /* HOME: the cassette's state a
     cv_rect(TB_X, 10, TB_W, 4, T_TINT);
     if (w)
         cv_rect(TB_X, 10, (int32_t)w, 4, tape_col());
-    cv_text_r(232, 5, &AF_S, "SOON", T_DIM, T_BG);   /* the tape audio: milestones 6 and 7 */
     cv_rect(0, 23, 240, 1, T_LINE);
     cv_blit(0, y);
 }

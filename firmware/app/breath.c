@@ -54,7 +54,7 @@ static void breath_block(void)   /* once per block, before the voices and the ch
     br.ph[0] += br.inc;
     br.ph[1] += br.inc + (br.inc >> 1) - (br.inc >> 3);   /* x 1.375 */
     br.ph[2] += br.inc - (br.inc >> 2);                   /* x 0.75 */
-    br.pm = (br_sine(br.ph[0]) * br.a_pitch >> 15) << 4;  /* (32 767 * 4 845 < 2^31) */
+    br.pm = (br_sine(br.ph[0]) * br.a_pitch >> 15) * 16;  /* (32 767 * 4 845 < 2^31) */
     idx = cur.p[P_DARK] + ((br_sine(br.ph[1]) * br.a_cut >> 15) >> 8);   /* (32 767 * 6 400 < 2^31) */
     fx.dark_a = DARK_A[idx < 0 ? 0 : idx > 100 ? 100 : idx];
     fx.lmod = 32768 + (br_sine(br.ph[2]) * br.a_lvl >> 15);

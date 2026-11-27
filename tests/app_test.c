@@ -43,6 +43,21 @@ static void press(uint32_t label)                /* a button down for a frame, t
     host_frame();
 }
 
+static void run_frames(uint32_t k)               /* k main-loop frames (16 ms) with the audio running beside them */
+{
+    while (k--) {
+        host_frame();
+        host_render(buf, 704);                   /* (16 ms, whole blocks) */
+    }
+}
+
+static void press_t(uint32_t label)              /* a press, then a block of audio: the cassette's ISR takes it */
+{
+    press(label);
+    host_render(buf, 64);
+    host_frame();
+}
+
 static void turn(uint32_t role, int32_t steps)
 {
     host_turn(role, steps);
@@ -84,6 +99,7 @@ static void reset_state(void)                    /* the app's RAM as at power-on
     memset(&br, 0, sizeof br);
     memset(br.last, 0xFF, sizeof br.last);
     memset(&tape, 0, sizeof tape);
+    tape.rnd = 0x1234567u;
     memset(&cur, 0, sizeof cur);
     memset(&bank, 0, sizeof bank);
     memset(&set, 0, sizeof set);
@@ -268,34 +284,33 @@ static void controls(void)
     press(B_ARP);
     check("ARP: says SOON", toast_on() && str_eq(ui.toast, "ARP: SOON"));
 
-    /* the cassette's transport */
-    press(B_PLAY);
+    /* the cassette's transport (its clock is the audio: frames and audio run together here) */
+    press_t(B_PLAY);
     check("PLAY on an empty tape: nothing", tape.st == TP_EMPTY);
-    press(B_REC);
+    press_t(B_REC);
     check("REC: recording, its LED lit", tape.st == TP_REC && host_led[panel.btn[B_REC]]);
-    for (erases = 0; erases < 125u; erases++)    /* 2 s */
-        host_frame();
-    press(B_REC);
+    run_frames(125);                             /* 2 s */
+    press_t(B_REC);
     check("REC again: the loop closed (~2 s) and playing", tape.st == TP_PLAY && tape.len > 1900u && tape.len < 2200u);
-    press(B_REC);
+    press_t(B_REC);
     check("REC while playing: overdub, REC and PLAY lit", tape.st == TP_DUB && host_led[panel.btn[B_REC]] &&
           host_led[panel.btn[B_PLAY]]);
     host_png("build/shots/dub.png");
-    press(B_REC);
+    press_t(B_REC);
     check("REC again: overdub off", tape.st == TP_PLAY);
-    press(B_PLAY);
-    check("PLAY: stopped, the position kept", tape.st == TP_STOP && tape.pos < tape.len);
-    press(B_PLAY);
+    press_t(B_PLAY);
+    check("PLAY: stopped (braking), the position kept", tape.st == TP_STOP && tape.pos < tape.len);
+    press_t(B_PLAY);
     check("PLAY again: playing", tape.st == TP_PLAY);
     host_press(B_REC, 1);
-    for (erases = 0; erases < 70u; erases++)     /* 1.1 s */
-        host_frame();
+    run_frames(70);                              /* 1.1 s */
     host_press(B_REC, 0);
     host_frame();
+    host_render(buf, 64);
+    host_frame();
     check("REC held 1 s: the tape erased", tape.st == TP_EMPTY && tape.len == 0u && str_eq(ui.toast, "TAPE ERASED"));
-    press(B_REC);
-    for (erases = 0; erases < 700u; erases++)    /* 11 s */
-        host_frame();
+    press_t(B_REC);
+    run_frames(700);                             /* 11 s */
     check("a first pass to the end: closes itself at 10 s", tape.st == TP_PLAY && tape.len == TAPE_MAX_MS);
     press(B_SEQ);
     check("SEQ: the TAPE page, SEQ lit", ui.page == PG_TAPE && host_led[panel.btn[B_SEQ]]);
@@ -769,6 +784,8 @@ static void spread_q(const int32_t *b, uint32_t frames, double (*f)(const int32_
 
 static double pitch_q(const int32_t *b, uint32_t frames) { return pitch(b, frames); }
 
+
+
 static double h10_q(const int32_t *b, uint32_t frames) { return level_at(b, frames, 1746.14); }   /* F3's 10th */
 
 static void breath(void)
@@ -828,6 +845,173 @@ static void breath(void)
     host_render(buf, 64);
 }
 
+/* The cassette's audio (milestones 6, 7). The voices alone (fx.bypass: a clean saw to measure), F3 (174.61 Hz). */
+static void tape_rec_s(uint32_t frames)          /* REC, frames of audio, REC: a loop of that length, playing */
+{
+    press_t(B_REC);
+    host_render(buf, frames);
+    press_t(B_REC);
+}
+
+static void tape_audio(void)
+{
+    const uint32_t S = BLOCKS(FS), L = 44096u;   /* a 1 s loop (22 048 cells: 44 096 output samples at 1x) */
+    double p;
+    uint32_t i, same;
+    host_nor_erase();
+    power_cycle();
+    fx.bypass = 1;
+    cur.p[P_BREATH] = 0;
+    cur.p[P_LAYERS] = 1;
+    cur.p[P_SUB] = 0;
+    cur.p[P_ATTACK] = 0;
+    cur.p[P_RELEASE] = 0;
+    set.g[G_OCT] = 0;
+    set.g[G_WEAR] = 0;
+    set.g[G_DECAY] = 0;
+    tap_key(0);
+    host_render(buf, 1024);
+    tape_rec_s(L - 64u);                         /* (press_t renders 64 more) */
+    check("1 s recorded: playing, the length 1.0 s", tape.st == TP_PLAY && tape.len >= 990u && tape.len <= 1010u);
+    tap_key(0);                                  /* the live note off: from here only the tape sounds */
+    host_render(buf, 2048);
+    host_render(buf, 2u * L);
+    p = pitch(buf, 2u * L);
+    check("playback: the recorded note (174.6 Hz +-1 %)", fabs(p / 174.61 - 1.0) < 0.01 && peak(buf, 2u * L) > 4000 &&
+          peak(buf, 2u * L) < 8500);
+    for (i = same = 0; i < tape.n * 2u; i++)
+        same += buf[2u * i] == buf[2u * (i + tape.n * 2u)];
+    check("WEAR 0: the loop repeats sample for sample", same == tape.n * 2u);
+    set.g[G_SPEED] = 50;
+    host_render(buf, S);
+    host_render(buf, S);
+    check("SPEED 1/2: an octave down (87.3 Hz +-1 %)", fabs(pitch(buf, S) / 87.307 - 1.0) < 0.01);
+    set.g[G_SPEED] = 75;
+    host_render(buf, S);
+    check("SPEED 75: varispeed (131 Hz +-1 %)", fabs(pitch(buf, S) / (174.61 * 0.75) - 1.0) < 0.01);
+    set.g[G_SPEED] = 100;
+    press_t(B_HOME);
+
+    set.g[G_DECAY] = 50;                         /* overdub with nothing live: each pass keeps half */
+    host_render(buf, L);
+    p = rms(buf, L);
+    press_t(B_REC);
+    check("REC while playing: DUB", tape.st == TP_DUB);
+    host_render(buf, L);                         /* one pass written at 1/2 */
+    host_render(buf, L);                         /* the next pass plays it */
+    check("DECAY 50: one silent overdub pass halves the tape (RMS 0.5 +-0.05)", fabs(rms(buf, L) / p - 0.5) < 0.05);
+    set.g[G_DECAY] = 0;                          /* (the pass just played was still written at 1/2) */
+    host_render(buf, L);
+    p = rms(buf, L);
+    host_render(buf, L);
+    check("DECAY 0: a silent overdub pass keeps the tape (+-3 %)", fabs(rms(buf, L) / p - 1.0) < 0.03);
+    tap_key(4);                                  /* A3 (220 Hz) added live while dubbing */
+    host_render(buf, L);
+    tap_key(4);
+    host_render(buf, 2048);
+    host_render(buf, L);
+    check("overdub: the tape now holds the old note (faded twice) and the new one", level_at(buf, L, 174.61) > 300 &&
+          level_at(buf, L, 220.0) > 1000);
+    press_t(B_REC);
+    check("REC: overdub off, playing", tape.st == TP_PLAY);
+
+    set.g[G_BRAKE] = 10;                         /* a 1 s brake */
+    host_render(buf, 4096);
+    p = pitch(buf, 4096);
+    press_t(B_PLAY);
+    check("PLAY: STOP shown at once, the brake begins", tape.st == TP_STOP && tape.braking);
+    host_render(buf, BLOCKS(FS / 2));            /* (the last 0.1 s of the first half: speed ~0.5) */
+    check("half way through the brake: the pitch lower (below 0.65)", pitch(buf + 2u * (BLOCKS(FS / 2) - 4096u), 4096) <
+          p * 0.65);
+    host_render(buf, S);
+    check("after the brake: silent, stopped", peak(buf + 2u * (S - 8192u), 8192) == 0 && tape.spd == 0);
+    press_t(B_PLAY);
+    host_render(buf, BLOCKS(FS / 2));            /* (spun up after 0.3 s) */
+    check("PLAY: spins up and plays again at speed (A3 on the tape at 220 Hz again)", tape.st == TP_PLAY &&
+          !tape.spinning && tape.spd == 65536 && level_at(buf + 2u * (BLOCKS(FS / 2) - 8192u), 8192, 220.0) > 1000);
+
+    set.g[G_DIR] = 1;                            /* reverse: a swell recorded plays as a fade */
+    host_render(buf, 64);
+    {
+        double a1, a2;
+        host_nor_erase();
+        press_t(B_PLAY);                          /* (stop, erase, record a 1 s swell from silence) */
+        host_press(B_REC, 1);
+        run_frames(70);
+        host_press(B_REC, 0);
+        host_frame();
+        host_render(buf, 64);
+        set.g[G_DIR] = 0;
+        cur.p[P_ATTACK] = 10;                    /* 1 s swell */
+        tap_key(0);
+        tape_rec_s(L - 64u);
+        tap_key(0);
+        host_render(buf, 2048);
+        while (tape.ip > 64u)                    /* to the loop's start */
+            host_render(buf, CTL);
+        host_render(buf, L);
+        a1 = rms(buf + 2u * 2048u, 8192) / rms(buf + 2u * (L - 10240u), 8192);
+        set.g[G_DIR] = 1;
+        host_render(buf, L);
+        a2 = rms(buf + 2u * 2048u, 8192) / rms(buf + 2u * (L - 10240u), 8192);
+        check("forward: the swell rises; DIRECTION reverse: it falls", a1 < 0.6 && a2 > 1.6);
+        set.g[G_DIR] = 0;
+        host_press(B_REC, 1);                    /* a steady loop again for WEAR */
+        run_frames(70);
+        host_press(B_REC, 0);
+        host_frame();
+        host_render(buf, 64);
+        cur.p[P_ATTACK] = 0;
+        tap_key(0);
+        host_render(buf, 1024);
+        tape_rec_s(L - 64u);
+        tap_key(0);
+        host_render(buf, 2048);
+    }
+
+    {                                            /* wow and flutter: the head after each loop's worth of samples */
+        uint32_t w = 2u * tape.n, k, ip0, drift = 0, d;
+        while (tape.ip > 64u)
+            host_render(buf, CTL);
+        set.g[G_WEAR] = 0;
+        ip0 = tape.ip;
+        for (k = 0; k < 4u; k++) {
+            host_render(buf, w);
+            d = tape.ip > ip0 ? tape.ip - ip0 : ip0 - tape.ip;
+            drift = d > drift ? d : drift;
+        }
+        check("WEAR 0: the head back at the same cell after every loop (exact speed)", drift == 0u);
+        set.g[G_WEAR] = 100;
+        for (k = drift = 0; k < 4u; k++) {
+            host_render(buf, w);
+            d = tape.ip > ip0 ? tape.ip - ip0 : ip0 - tape.ip;
+            d = d > tape.n / 2u ? tape.n - d : d;
+            drift = d > drift ? d : drift;
+        }
+        check("WEAR 100: the speed wavers (the head > 20 cells off after a loop: wow ~+-0.6 %)", drift > 20u);
+        set.g[G_WEAR] = 0;
+    }
+
+    host_press(B_REC, 1);                        /* erase: silence again */
+    run_frames(70);
+    host_press(B_REC, 0);
+    host_frame();
+    host_render(buf, 2048);
+    check("erased: the tape silent", tape.st == TP_EMPTY && peak(buf + 2u * 1024u, 1024) == 0);
+    press_t(B_REC);                              /* a silent loop: only the hiss of WEAR */
+    host_render(buf, 8192);
+    press_t(B_REC);
+    host_render(buf, S);
+    check("a silent tape at WEAR 0: exact silence", peak(buf, S) == 0);
+    set.g[G_WEAR] = 100;
+    host_render(buf, S);
+    check("a silent tape at WEAR 100: a faint hiss (0 < peak < 300)", peak(buf, S) > 0 && peak(buf, S) < 300);
+    set.g[G_WEAR] = GP[G_WEAR].def;
+    fx.bypass = 0;
+    app_audio_stop();
+    host_render(buf, 64);
+}
+
 int main(void)
 {
     if (system("mkdir -p build/shots"))
@@ -839,6 +1023,7 @@ int main(void)
     engine();
     fx_chain();
     breath();
+    tape_audio();
     puts(failed ? "APP TEST FAILED" : "app test passed");
     return failed ? 1 : 0;
 }

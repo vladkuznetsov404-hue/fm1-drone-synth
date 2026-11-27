@@ -103,6 +103,16 @@ Each page draws only what changed (the platform's lazy drawing).
 
 ### The cassette
 
+Built (milestones 6 and 7, `tape.c`). The audio ISR owns the tape (its clock is the sample count); the main loop
+posts the buttons and shows the state. The details as built:
+
+- Cells: the chain's output × 5 / 512 (its ~12 000 peak uses ~117 of 127 steps), two output samples averaged per
+  cell; writes saturate softly above 96. Playback interpolates two cells linearly. A loop is at least 0.1 s.
+- Overdub writes the cell the head leaves with the average of the live samples on it (none while braking below
+  ¼ speed); DECAY scales the old cell per pass. WEAR: wow ±0.61 % at ~0.5 Hz, flutter ±0.15 % at ~8 Hz, hiss up
+  to ~−44 dB, and a cell-rate one-pole on every write (WEAR 100: ~1.8 kHz) so the highs go pass by pass.
+- PLAY from STOP spins up in ~0.3 s; the brake slows linearly over BRAKE (0.2–4 s). STOP shows at once.
+
 - One loop buffer in the pool, **8-bit, ~22 kHz** (every second output sample, with a simple anti-alias filter):
   about **10 s** (~220 KB). Lo-fi is intended.
 - REC on an empty tape records the instrument's output (after the cabinet) until REC is pressed again: that sets the
