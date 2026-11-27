@@ -73,6 +73,7 @@ typedef struct {
     uint32_t base, tgt, age;     /* base: the note's increment, gliding to tgt; age: when it started (snd.clock), the oldest is stolen */
     int32_t gain, step;          /* Q24; step per sample, + while rising, - while falling */
     uint8_t note, state, src;
+    uint8_t key1;                /* the key that started it + 1 (0: not from a key): SCALE and ROOT re-map it */
 } voice_t;
 
 static struct {
@@ -88,11 +89,13 @@ static struct {
     int32_t lamp;                /* a layer's level, Q15 (the sub's: fx.samp, with MASSA's lift) */
     uint8_t layers, subsh;       /* layers sounding; the sub's octave shift */
     int16_t croot;               /* the key's note whose chord is latched (-1: none: the keys are single notes) */
-    uint8_t chsig;               /* CHORD and LOW ROOT as last seen: a change re-voices the sounding chord */
+    uint8_t chsig, scsig;        /* CHORD and LOW ROOT / SCALE and ROOT as last seen: a change re-voices what sounds */
+    int8_t ckey;                 /* the key of the latched chord (-1: none) */
+    uint8_t skey1;               /* the key being pressed + 1 (0: a MIDI note): snd_start records it */
     int32_t xf;                  /* the crossfade: 0 SAW .. 32 768 FM, Q15 */
     uint32_t fbk, ix, ratio;     /* FM: the feedback and the index as phase per unit (>> 15 applied), the ratio */
     int16_t fm_last[3];          /* the values fm_update last used: FEEDBACK, INDEX, MASSA (-1 never) */
-} snd = {.fm_last = {-1, -1, -1}, .croot = -1, .chsig = 0xFFu};
+} snd = {.fm_last = {-1, -1, -1}, .croot = -1, .chsig = 0xFFu, .scsig = 0xFFu, .ckey = -1};
 
 static __attribute__((noinline)) void fm_update(void)   /* FEEDBACK (+ half of MASSA) and INDEX -> phase amounts */
 {
@@ -321,6 +324,7 @@ static __attribute__((noinline)) void snd_morph(int32_t root, uint32_t src)   /*
         }
     for (r = 0; r < m && r < nn; r++) {          /* the lowest to the lowest: each glides to its note */
         voice_t *v = &snd.v[idx[r]];
+        v->key1 = snd.skey1;
         if (v->note != (uint8_t)notes[r]) {
             v->note = (uint8_t)notes[r];
             v->tgt = note_inc((uint32_t)notes[r]);
@@ -351,6 +355,35 @@ static __attribute__((noinline)) void snd_chord_watch(void)   /* CHORD or LOW RO
         snd_morph(snd.croot, SRC_KEY);
 }
 
+/* SCALE or ROOT turned while notes sound: they move to where their keys are now (the scale is what you set, live). */
+static __attribute__((noinline)) void snd_rekey(void)
+{
+    uint8_t sig = (uint8_t)(set.g[G_SCALE] | set.g[G_ROOT] << 4);
+    uint32_t i;
+    if (sig == snd.scsig)
+        return;
+    snd.scsig = sig;
+    if (snd.ckey >= 0 && snd_any_on()) {         /* a chord: the key's note is the new root */
+        snd.skey1 = (uint8_t)(snd.ckey + 1);
+        snd.croot = (int16_t)key_note((uint32_t)snd.ckey);
+        snd_morph(snd.croot, SRC_KEY);
+        snd.skey1 = 0;
+        return;
+    }
+    for (i = 0; i < NV; i++) {
+        voice_t *v = &snd.v[i];
+        int32_t n;
+        if (v->state != V_ON || !v->key1)
+            continue;
+        n = key_note((uint32_t)v->key1 - 1u);
+        if (n >= 0 && n <= 127 && n != v->note) {
+            v->note = (uint8_t)n;
+            v->tgt = note_inc((uint32_t)n);
+            snd.held[i] = (uint8_t)n;
+        }
+    }
+}
+
 static __attribute__((noinline)) void snd_press(int32_t root, uint32_t src)   /* a key: its chord, latched as a whole */
 {
     int32_t notes[NV];
@@ -363,18 +396,22 @@ static __attribute__((noinline)) void snd_press(int32_t root, uint32_t src)   /*
                 if (snd.v[j].state == V_ON)
                     snd_stop_voice(j);
             snd.croot = -1;
+            snd.ckey = -1;
         } else if (snd_any_on()) {
             snd_morph(root, src);
             snd.croot = (int16_t)root;
+            snd.ckey = (int8_t)(snd.skey1 - 1);
         } else {
             for (i = 0; i < n; i++)
                 if (notes[i] >= 0 && notes[i] <= 127)
                     snd_start((uint32_t)notes[i], src);
             snd.croot = (int16_t)root;
+            snd.ckey = (int8_t)(snd.skey1 - 1);
         }
         return;
     }
     snd.croot = -1;
+    snd.ckey = -1;
     for (j = 0; j < NV; j++)
         on |= snd.v[j].state == V_ON && snd.v[j].note == root;
     for (i = 0; i < n; i++) {
@@ -434,6 +471,7 @@ static __attribute__((noinline)) void snd_start(uint32_t note, uint32_t src)   /
         v->base = v->tgt;
     snd_tune(v);
     v->src = (uint8_t)src;
+    v->key1 = snd.skey1;
     v->state = V_ON;
     v->step = ramp_step(cur.p[P_ATTACK]);
     v->age = ++snd.clock;
@@ -445,7 +483,9 @@ static __attribute__((noinline)) void snd_keys(uint32_t down)   /* keys that wen
     while (down) {
         uint32_t k = (uint32_t)__builtin_ctz(down);
         down &= down - 1u;
+        snd.skey1 = (uint8_t)(k + 1u);
         snd_press(key_note(k), SRC_KEY);
+        snd.skey1 = 0;
     }
 }
 
@@ -472,6 +512,7 @@ static __attribute__((noinline)) void snd_requests(void)
         snd.stop_req = 0;
         snd.silence_req = 0;
         snd.croot = -1;
+        snd.ckey = -1;
         for (i = 0; i < NV; i++) {
             snd.v[i].state = V_OFF;
             snd.v[i].gain = 0;
@@ -481,6 +522,7 @@ static __attribute__((noinline)) void snd_requests(void)
     if (snd.silence_req) {
         snd.silence_req = 0;
         snd.croot = -1;
+        snd.ckey = -1;
         for (i = 0; i < NV; i++)
             if (snd.v[i].state == V_ON) {
                 snd.v[i].state = V_REL;
@@ -502,6 +544,7 @@ static void snd_render(int32_t *out, uint32_t n)
     while (midi_in_take(&pkt, &src))
         snd_midi(pkt, src);
     snd_chord_watch();
+    snd_rekey();
     snd_glide(n);
     if (snd.stop_req | snd.silence_req)          /* after the queue: what came before a stop is forgotten too */
         snd_requests();
@@ -584,12 +627,25 @@ static void snd_render(int32_t *out, uint32_t n)
     shoe_process(out, n);                        /* SHOEGAZE: the chorus and the reverb (shoe.c) */
     tape_process(out, n);                        /* the cassette: records the chain, plays back over it (tape.c) */
     dly_process(out, n);                         /* the tape echo over all of it (delay.c) */
-    for (i = 0; i < n; i++) {
-        int32_t s = out[2u * i] * vol >> 8;
-        s = s > 32767 ? 32767 : s < -32767 ? -32767 : s;
-        out[2u * i] = s;
-        out[2u * i + 1u] = s;
-    }
+    spin_block(n);                               /* SPIN: the rotor's pan and dip, per block (shoe.c) */
+    if (sp.on) {
+        for (i = 0; i < n; i++) {
+            int32_t s = out[2u * i] * vol >> 8, l, r;
+            s = s > 32767 ? 32767 : s < -32767 ? -32767 : s;
+            sp.gl += sp.dl;
+            sp.gr += sp.dr;
+            l = s * (sp.gl >> 5) >> 15;            /* (32 767 * 32 768 < 2^31) */
+            r = s * (sp.gr >> 5) >> 15;
+            out[2u * i] = l;
+            out[2u * i + 1u] = r;
+        }
+    } else
+        for (i = 0; i < n; i++) {
+            int32_t s = out[2u * i] * vol >> 8;
+            s = s > 32767 ? 32767 : s < -32767 ? -32767 : s;
+            out[2u * i] = s;
+            out[2u * i + 1u] = s;
+        }
     if (scope.req && !scope.ready)
         scope_take(out, n);
 }

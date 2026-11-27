@@ -17,6 +17,8 @@ enum { P_MASSA, P_BEATS, P_DARK, P_BREATH,                 /* HOME: the four mac
        P_ATTACK, P_RELEASE,                                /* ENV */
        P_RATE, P_TOPITCH, P_TOCUT, P_TOLEVEL,              /* LFO */
        P_CHORUS, P_REVERB,                                 /* FX, SHOEGAZE (the chorus and the reverb) */
+       P_SPIN,                                             /* the rotor: the sound whirls between the speakers */
+       P_LSHAPE, P_LDEST, P_LAMT,                          /* the LFO: its shape, what it moves, how far */
        NP };
 #define P_ROOM 40                /* values room in a stored sound: NP can grow to it without moving the bank */
 
@@ -27,9 +29,10 @@ enum { G_CH, G_TRS, G_VOL, G_OCT, G_SLOT, G_SPEED, G_DIR, G_DECAY, G_WEAR, G_BRA
        G_DGLIDE, G_DDRV,                                   /* the echo's motor and its drive */
        G_GMIX, G_GSIZE, G_GDENS, G_GPITCH, G_GSCAT, G_GREV, G_GFB,   /* the grains */
        G_SCALE, G_ROOT, G_CHORD, G_LOW,                    /* SCL: the scale of the keys, the chords */
-       G_MODE,                                             /* HARSH or SHOEGAZE */
+       G_MODE,                                             /* the body (the engine): BLACK HOLE (HARSH) or QUASAR (SHOEGAZE), more to come */
        G_DROP,                                             /* the cassette's dropouts */
        G_SLIDE,                                            /* the notes' glide when a chord changes (tenths of a second) */
+       G_AMASS,                                            /* ANOMALY's MASS: bends time between the echoes and tears grains off them */
        NG };
 #define G_ROOM 48
 
@@ -39,8 +42,11 @@ enum { ENG_SAW, ENG_FM };
 
 /* how a value reads on the screen */
 enum { F_NUM, F_SEC10, F_SUBOCT, F_RATIO, F_CAB, F_HZ, F_CH, F_ONOFF, F_SPEED, F_DIR, F_OCT, F_MS, F_HEADS, F_PITCH,
-       F_MODE, F_SCALE, F_ROOT, F_CHORD, F_LOW, F_GMS };
-enum { MODE_HARSH, MODE_SHOE };
+       F_MODE, F_SCALE, F_ROOT, F_CHORD, F_LOW, F_GMS, F_LSHAPE, F_LDEST };
+enum { MODE_HARSH, MODE_SHOE, NMODE };           /* the bodies: each has its own sounds, colours and picture (SELECT turns them) */
+static const char *const MODE_NAME[NMODE] = {"BLACK HOLE", "QUASAR"};   /* the toast and F_MODE */
+static const char *const MODE_TAG[NMODE] = {"HOLE", "QUASAR"};          /* the header's tag */
+static const char *const MODE_PAL[NMODE] = {"MASSA", "SHOEGAZE"};       /* the palette (tools/gen_ui_palettes.py) */
 
 typedef struct {
     const char *label;
@@ -63,6 +69,9 @@ static const par_t SP[NP] = {
     [P_TOPITCH] = {"TO PITCH", 0, 100, 20, F_NUM}, [P_TOCUT] = {"TO CUTOFF", 0, 100, 40, F_NUM},
     [P_TOLEVEL] = {"TO LEVEL", 0, 100, 20, F_NUM},
     [P_CHORUS] = {"SHIMMER", 0, 100, 0, F_NUM},    [P_REVERB] = {"BLOOM", 0, 100, 0, F_NUM},
+    [P_SPIN] = {"SPIN", 0, 100, 0, F_NUM},         /* 0: still; slow breath of the rotor .. a wild whirl */
+    [P_LSHAPE] = {"SHAPE", 0, 4, 0, F_LSHAPE},     [P_LDEST] = {"TARGET", 0, 4, 0, F_LDEST},
+    [P_LAMT] = {"DEPTH", 0, 100, 0, F_NUM},        /* 0: the LFO moves nothing (BREATH's own three still run) */
 };
 
 static const par_t GP[NG] = {
@@ -71,20 +80,20 @@ static const par_t GP[NG] = {
     [G_VOL] = {"VOLUME", 0, 100, 80, F_NUM},
     [G_OCT] = {"OCTAVE", -3, 1, -2, F_OCT},
     [G_SLOT] = {"SOUND", 0, NSND - 1, 0, F_NUM},
-    [G_SPEED] = {"SPEED", 50, 100, 100, F_SPEED},  /* percent: 50 = 1/2, 100 = 1, between = varispeed */
+    [G_SPEED] = {"SPEED", 10, 300, 100, F_SPEED},  /* percent: 100 = 1x, 10 = a tenth (a long slow-down), 300 = three times; varispeed */
     [G_DIR] = {"DIRECTION", 0, 1, 0, F_DIR},
-    [G_DECAY] = {"DECAY", 0, 100, 10, F_NUM},
-    [G_WEAR] = {"WEAR", 0, 100, 30, F_NUM},
+    [G_DECAY] = {"FORGET", 0, 100, 10, F_NUM},    /* (DECAY of the earlier firmware, same id) how much of the old loop each lap of recording over it takes away */
+    [G_WEAR] = {"AGE", 0, 100, 30, F_NUM},        /* (WEAR, same id) an old tape: pitch wobble, hiss, dulled highs */
     [G_BRAKE] = {"BRAKE", 2, 40, 15, F_SEC10},     /* 0.2 .. 4.0 s */
     [G_DT] = {"TIME", 0, 100, 45, F_MS},           /* 60 .. 950 ms between the heads (dly_ms10) */
     [G_DFB] = {"REPEATS", 0, 100, 40, F_NUM},
     [G_DMIX] = {"ECHO", 0, 100, 0, F_NUM},         /* 0: off (the default: the instrument starts dry) */
-    [G_DHEADS] = {"HEADS", 1, 7, 3, F_HEADS},      /* a mask: 1, 2, 4 = the heads at D, 2 D, 3 D */
-    [G_DWOB] = {"WOBBLE", 0, 100, 25, F_NUM},
+    [G_DHEADS] = {"HEADS", 1, 7, 7, F_HEADS},      /* a mask: 1, 2, 4 = the heads at D, 2 D, 3 D (not on the screen: all three) */
+    [G_DWOB] = {"ORBIT", 0, 100, 25, F_NUM},
     [G_DDULL] = {"DULL", 0, 100, 40, F_NUM},
     [G_PITCH] = {"PITCH", -12, 12, 0, F_PITCH},    /* semitones, on top of SPEED (apart from it with LOCK) */
     [G_LOCK] = {"LOCK", 0, 1, 0, F_ONOFF},         /* ON: SPEED changes the time only, the pitch stays */
-    [G_DGLIDE] = {"GLIDE", 0, 100, 30, F_NUM},     /* the echo's motor: 0.15 s .. 6 s across TIME's range */
+    [G_DGLIDE] = {"GLIDE", 0, 100, 30, F_NUM},     /* the echo's motor: 0.15 s .. 6 s across TIME's range (the old default stays: 30) */
     [G_DDRV] = {"TAPE DRIVE", 0, 100, 0, F_NUM},
     [G_GMIX] = {"GRAINS", 0, 100, 0, F_NUM},       /* 0: off */
     [G_GSIZE] = {"SIZE", 1, 100, 40, F_GMS},       [G_GDENS] = {"DENSITY", 1, 100, 30, F_NUM},
@@ -92,8 +101,9 @@ static const par_t GP[NG] = {
     [G_GREV] = {"REVERSE", 0, 100, 20, F_NUM},     [G_GFB] = {"GRAIN FEED", 0, 100, 0, F_NUM},
     [G_SCALE] = {"SCALE", 0, 6, 0, F_SCALE},       [G_ROOT] = {"ROOT", 0, 11, 0, F_ROOT},
     [G_CHORD] = {"CHORD", 0, 7, 0, F_CHORD},       [G_LOW] = {"LOW ROOT", 0, 2, 0, F_LOW},
-    [G_MODE] = {"MODE", 0, 1, 0, F_MODE},
+    [G_MODE] = {"BODY", 0, NMODE - 1, 0, F_MODE},
     [G_DROP] = {"DROPOUT", 0, 100, 0, F_NUM},
+    [G_AMASS] = {"MASS", 0, 100, 25, F_NUM},       /* the well the echoes fall into (the old HEADS and the grains' own knobs are no longer on the screen) */
     [G_SLIDE] = {"SLIDE", 0, 60, 15, F_SEC10},     /* the time constant of a note moving to the next chord: 0 = at once */
 };
 
@@ -106,8 +116,8 @@ typedef struct {
 
 static struct {
     snd_t s[NSND];
-} bankm[2];                      /* the sounds of each mode: HARSH in slot 1, SHOEGAZE in slot 2 */
-#define bank (bankm[set.g[G_MODE] ? 1 : 0])   /* the bank of the mode playing */
+} bankm[NMODE];                  /* the sounds of each mode: slot 1 + the mode */
+#define bank (bankm[set.g[G_MODE]])      /* the bank of the mode playing */
 
 static struct {
     uint8_t ng, pad[3];          /* values stored in g[] */
@@ -115,10 +125,11 @@ static struct {
 } set;                           /* stored in slot 0; the ISR reads G_CH, G_TRS, G_VOL, G_OCT (int16: torn-free) */
 
 static snd_t cur;                /* the sound playing (the edit buffer): PRESETS loads it, SAVE stores it */
+static snd_t workm[NMODE];       /* the edit buffers of the modes not playing (a turn of SELECT must not lose an edit) */
+static uint8_t workslot[NMODE];  /* the slot each one was a copy of (0xFF: none) */
 
 #define SLOT_SET 0u
 #define SLOT_BANK 1u
-#define SLOT_BANK2 2u
 
 static int16_t clamp16(int32_t v, int32_t lo, int32_t hi) { return (int16_t)(v < lo ? lo : v > hi ? hi : v); }
 
@@ -199,6 +210,10 @@ static void snd_default_m(snd_t *s, uint32_t slot, uint32_t mode)
         s->engine = f->engine;
         for (i = 0; i < NP; i++)
             s->p[i] = f->p[i];
+        if (mode == MODE_SHOE) {                 /* the quasars turn: from a slow breath to a whirl */
+            static const uint8_t SPIN_S[NSND - 1] = {12, 6, 0, 18, 0, 8, 45, 10, 0, 5, 30, 14, 0, 70, 9};
+            s->p[P_SPIN] = SPIN_S[slot - 1u];
+        }
     }
 }
 
@@ -247,8 +262,9 @@ static void data_load(void)      /* app_init: defaults, then the records over th
                 set.g[i] = i < NG ? GP[i].def : 0;
         set.ng = NG;
     }
-    for (m = 0; m < 2u; m++) {
-        n = store_load(m ? SLOT_BANK2 : SLOT_BANK, APP_ID, &bankm[m], sizeof bankm[m]);
+    for (m = 0; m < NMODE; m++) {
+        workslot[m] = 0xFFu;
+        n = store_load(SLOT_BANK + m, APP_ID, &bankm[m], sizeof bankm[m]);
         k = n > 0 ? (uint32_t)n / sizeof(snd_t) : 0u;   /* whole sounds stored */
         for (i = 0; i < NSND; i++) {
             if (i < k)
@@ -265,7 +281,7 @@ static int data_save(uint32_t slot)              /* main loop, ~100 ms (two reco
     int r;
     bank.s[slot] = cur;
     set.g[G_SLOT] = (int16_t)slot;
-    r = store_save(set.g[G_MODE] ? SLOT_BANK2 : SLOT_BANK, APP_ID, &bank, sizeof bank);   /* (the mode playing) */
+    r = store_save(SLOT_BANK + (uint32_t)set.g[G_MODE], APP_ID, &bank, sizeof bank);   /* (the mode playing) */
     r |= store_save(SLOT_SET, APP_ID, &set, sizeof set);
     return r;
 }
@@ -328,15 +344,14 @@ static void par_text(char *b, uint32_t n, int32_t v, uint32_t fmt)   /* n >= 16 
     case F_CH: if (v) num(b, v); else str_cpy(b, "OMNI", n); break;
     case F_ONOFF: str_cpy(b, v ? "ON" : "OFF", n); break;
     case F_SPEED:
-        if (v <= 50) str_cpy(b, "1/2", n);
-        else if (v >= 100) str_cpy(b, "1", n);
-        else fixed2(b, v, 2);
+        str_cpy(b, "X", n);                      /* X1.00 is the tape as it was recorded */
+        fixed2(b + 1, v, 2);
         break;
     case F_DIR: str_cpy(b, v ? "REVERSE" : "FORWARD", n); break;
     case F_MS: num(b, dly_ms10(v) / 10); str_cat(b, " MS", n); break;
     case F_GMS: num(b, 20 + v * 6); str_cat(b, " MS", n); break;
     case F_PITCH: if (v > 0) { b[0] = '+'; num(b + 1, v); } else num(b, v); str_cat(b, " ST", n); break;
-    case F_MODE: str_cpy(b, v ? "SHOEGAZE" : "HARSH", n); break;
+    case F_MODE: str_cpy(b, MODE_NAME[v < 0 || v >= NMODE ? 0 : v], n); break;
     case F_SCALE: {
         static const char *const SC[7] = {"MANUAL", "MINOR", "PHRYGIAN", "LOCRIAN", "HARM MIN", "PENT MIN", "WHOLE"};
         str_cpy(b, SC[v < 0 || v > 6 ? 0 : v], n);
@@ -355,6 +370,16 @@ static void par_text(char *b, uint32_t n, int32_t v, uint32_t fmt)   /* n >= 16 
             if ((v >> k) & 1)
                 b[m++] = (char)('1' + k);
         b[m] = 0;
+        break;
+    }
+    case F_LSHAPE: {
+        static const char *const LS[5] = {"SINE", "TRIANGLE", "RAMP", "SQUARE", "RANDOM"};
+        str_cpy(b, LS[v < 0 || v > 4 ? 0 : v], n);
+        break;
+    }
+    case F_LDEST: {
+        static const char *const LD[5] = {"PITCH", "CUTOFF", "LEVEL", "FUZZ", "SPIN"};
+        str_cpy(b, LD[v < 0 || v > 4 ? 0 : v], n);
         break;
     }
     case F_OCT: if (v > 0) { b[0] = '+'; num(b + 1, v); } else num(b, v); break;

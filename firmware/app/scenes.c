@@ -89,6 +89,8 @@ static int32_t sc_bits(int32_t v)    /* the length of |v| in bits: a level on a 
     return n;
 }
 
+#define SC_HEAD(n, sp, bq) ((n) * (sp) * (256 + ((n) - 1) * (bq)) / 256)   /* head n's distance from the source: MASS stretches the gaps between the echoes */
+
 /* ---- the anomaly (the tape echo): a source, its echoes as lenses along a ray, the sound on the ray, a bent sheet ---- */
 #define SCD_Y 52                 /* the ray */
 #define SCD_REC 56               /* the source (the record head) */
@@ -96,7 +98,7 @@ static int32_t sc_bits(int32_t v)    /* the length of |v| in bits: a level on a 
 static void sc_delay(uint32_t y)
 {
     int32_t d = dl.d_pub ? dl.d_pub : dly_ms10(set.g[G_DT]) * DL_Q, ms10 = d / DL_Q, cells = d >> 16, v = dl.v_pub;
-    int32_t sp = 16 + (ms10 - 600) * 39 / 8900, x, k, off, i, dt, heads = set.g[G_DHEADS], tms = dly_ms10(set.g[G_DT]), tsp;
+    int32_t sp = 16 + (ms10 - 600) * 39 / 8900, x, k, off, i, dt, tms = dly_ms10(set.g[G_DT]), tsp, mass = set.g[G_AMASS], bq = mass * 38 / 100;
     int32_t bend, well, r0, x0 = 0, y0 = 0, row;
     uint32_t w = dl.w_pub;
     char b[24];
@@ -109,16 +111,16 @@ static void sc_delay(uint32_t y)
     sc.ph += (uint32_t)(sp * 256 * dt * 10 / ms10);   /* the ripples run out faster the shorter the delay is */
     bend = -v / 5243;                                 /* head 1's pitch change in %: the sheet is dragged by it */
     bend = bend > 60 ? 60 : bend < -60 ? -60 : bend;
-    well = 6 + set.g[G_DMIX] * 12 / 100 + set.g[G_DFB] * 8 / 100;
+    well = 6 + set.g[G_DMIX] * 12 / 100 + set.g[G_DFB] * 8 / 100 + mass * 10 / 100;   /* (MASS: the heavier it is, the deeper the well) */
     cv_begin(240, 124, T_BG);
     for (k = 0; k < 3; k++) {                         /* ripples spreading from the source */
         r0 = 12 + (int32_t)((sc.ph >> 7) + (uint32_t)k * 15u) % 45;
         sc_ring(SCD_REC, SCD_Y, r0, r0 < 24 ? T_LINE : r0 < 36 ? T_TINT : T_TINT);
     }
     cv_rect(SCD_REC, SCD_Y, 232 - SCD_REC, 1, T_LINE);                /* the ray */
-    for (x = SCD_REC; x <= SCD_REC + 3 * sp; x++) {                   /* the sound on it: the newest at the source */
+    for (x = SCD_REC; x <= SCD_REC + SC_HEAD(3, sp, bq) && x < 232; x++) {   /* the sound on it: the newest at the source (a head's far side: MASS stretches the gaps) */
         int32_t span = cells / sp, m = 0, amp, c;
-        off = (x - SCD_REC) * cells / sp;
+        off = (x - SCD_REC) * cells / sp * 256 / (256 + (x - SCD_REC) * bq / (2 * sp));
         span = span > 16 ? 16 : span < 1 ? 1 : span;
         for (i = 0; i < span; i++) {
             c = dl_cells[(w - 1u - (uint32_t)(off + i)) & DL_MASK];
@@ -130,15 +132,24 @@ static void sc_delay(uint32_t y)
             cv_rect(x, SCD_Y - amp, 1, 2 * amp + 1, T_THEME);
     }
     for (k = 0; k < 3 && (tsp - sp > 1 || sp - tsp > 1); k++)         /* where TIME is sending the echoes: ghosts */
-        sc_ring(SCD_REC + (k + 1) * tsp, SCD_Y, 9, T_DIM);
+        sc_ring(SCD_REC + SC_HEAD(k + 1, tsp, bq), SCD_Y, 9, T_DIM);
     for (k = 0; k < 3; k++) {                                         /* the echoes: a lens each, dark when that head is off */
-        int32_t hx = SCD_REC + (k + 1) * sp, on = (heads >> k) & 1;
+        int32_t hx = SCD_REC + SC_HEAD(k + 1, sp, bq) + sn((int32_t)(fm1_ms / 45u) + k * 30) * set.g[G_DWOB] * (k + 1) / 2540, on = 1;   /* (ORBIT: the lenses sway) */
+        hx = hx > 224 ? 224 : hx;
         char n[2] = {(char)('1' + k), 0};
         sc_disc(hx, SCD_Y, 11 - k, on ? T_THEME : T_RAISE);
         sc_disc(hx, SCD_Y, 8 - k, T_BG);
         if (on)
             sc_ring(hx, SCD_Y, 5 - k, T_ACCENT);
         cv_text_in(hx - 8, 28, 16, &AF_S, n, on ? T_TEXT : T_DIM, T_BG);
+    }
+    for (k = 0; k < (int32_t)DL_NG; k++) {                            /* MASS's grains: bits of the echo torn off, falling into the well */
+        int32_t gw = dl.gp_w[k], gx;
+        if (!gw)
+            continue;
+        gx = SCD_REC + (int32_t)dl.gp_gap[k] * sp / (cells > 1 ? cells : 1);
+        gx = gx > 226 ? 226 : gx;
+        cv_rect(gx, 66 + k * 2, 4 + (gw < 0 ? -gw : gw) / 24, 2, gw < 0 ? T_ACCENT : T_THEME);
     }
     sc_disc(SCD_REC, SCD_Y, 12, T_TINT);                              /* the source */
     sc_disc(SCD_REC, SCD_Y, 7, T_ACCENT);

@@ -15,6 +15,30 @@
 #define BR_LVL 6160              /* +-1.5 dB, Q15 (10^(1.5/20) - 1 = 0.188) */
 #define BR_INC 31167u            /* RATE 1 (0.01 Hz) as a per-block phase step: 2^32 * 0.01 * CTL / FS */
 
+/* The LFO proper (the LFO page): one wave at RATE, in a SHAPE, that moves one TARGET by DEPTH. It runs beside BREATH's
+ * three (which keep drifting the pitch, the cutoff and the level as before) and adds to them: at DEPTH 100 it is
+ * +-30 cents, +-50 DARK steps, +-50 % of the level, +-40 % of the fuzz's gain, or +-100 of SPIN. RANDOM glides between
+ * two values drawn at each cycle; SQUARE is smoothed over ~6 ms so it does not click. */
+#define LF_CENTS 2907            /* 30 cents per 100 DEPTH, a ratio offset in Q24 (30 * 9 691 / 100) */
+
+static struct {
+    uint32_t ph, rng;
+    int32_t a, b, sm;            /* RANDOM's two values; the smoothed SQUARE */
+    int32_t v;                   /* the wave now, +-32 767 (the picture shows it: lf_pub) */
+    int32_t pm, cut, lvl, gmod, spin;   /* what it moves now: Q24 ratio offset, DARK steps, Q15, Q15, SPIN steps */
+} lf = {.rng = 0x2545F491u};
+static volatile int16_t lf_pub;  /* the wave, published for the picture */
+static volatile uint16_t lf_ph_pub;   /* ... and its phase (16 bits) */
+
+static __attribute__((noinline)) void lf_wrap(void)   /* RANDOM: a new value at each cycle */
+{
+    lf.rng ^= lf.rng << 13;
+    lf.rng ^= lf.rng >> 17;
+    lf.rng ^= lf.rng << 5;
+    lf.a = lf.b;
+    lf.b = (int32_t)(lf.rng >> 16) - 32768;
+}
+
 enum { BV_BREATH, BV_RATE, BV_PITCH, BV_CUT, BV_LVL, BV_N };
 
 static struct {
@@ -44,6 +68,33 @@ static int32_t br_sine(uint32_t ph)   /* the parabolic sine of the sub: 4 u (1 -
     return y > 32767 ? 32767 : y;
 }
 
+static void lfo_block(void)      /* once per block: the LFO's wave and what it moves */
+{
+    int32_t t, v, amt = cur.p[P_LAMT], q, d;
+    uint32_t inc = (uint32_t)cur.p[P_RATE] * BR_INC;
+    lf.ph += inc;
+    if (lf.ph < inc)
+        lf_wrap();
+    t = (int32_t)(lf.ph >> 16);
+    switch (cur.p[P_LSHAPE]) {
+    case 1: v = (t < 32768 ? t : 65535 - t) * 2 - 32768; break;       /* triangle */
+    case 2: v = t - 32768; break;                                      /* ramp up */
+    case 3: lf.sm += ((t < 32768 ? 32767 : -32767) - lf.sm) >> 3; v = lf.sm; break;   /* square, smoothed */
+    case 4: v = lf.a + (((lf.b - lf.a) >> 1) * t >> 15); break;       /* random, gliding */
+    default: v = br_sine(lf.ph); break;
+    }
+    lf.v = v;
+    lf_pub = (int16_t)(v > 32767 ? 32767 : v < -32767 ? -32767 : v);
+    lf_ph_pub = (uint16_t)(lf.ph >> 16);
+    q = v >> 5;                                  /* +-1023 */
+    d = cur.p[P_LDEST];                          /* only the target moves */
+    lf.pm = d == 0 ? (q * (amt * LF_CENTS)) >> 10 : 0;
+    lf.cut = d == 1 ? (q * amt) >> 11 : 0;
+    lf.lvl = d == 2 ? ((v >> 1) * amt * 41) >> 12 : 0;
+    lf.gmod = d == 3 ? ((v >> 1) * amt * 33) >> 12 : 0;
+    lf.spin = d == 4 ? (q * amt) >> 10 : 0;
+}
+
 static void breath_block(void)   /* once per block, before the voices and the chain */
 {
     int32_t idx;
@@ -54,8 +105,12 @@ static void breath_block(void)   /* once per block, before the voices and the ch
     br.ph[0] += br.inc;
     br.ph[1] += br.inc + (br.inc >> 1) - (br.inc >> 3);   /* x 1.375 */
     br.ph[2] += br.inc - (br.inc >> 2);                   /* x 0.75 */
-    br.pm = (br_sine(br.ph[0]) * br.a_pitch >> 15) * 16;  /* (32 767 * 4 845 < 2^31) */
-    idx = cur.p[P_DARK] + ((br_sine(br.ph[1]) * br.a_cut >> 15) >> 8);   /* (32 767 * 6 400 < 2^31) */
+    lfo_block();
+    br.pm = (br_sine(br.ph[0]) * br.a_pitch >> 15) * 16 + lf.pm;  /* (32 767 * 4 845 < 2^31) */
+    idx = cur.p[P_DARK] + ((br_sine(br.ph[1]) * br.a_cut >> 15) >> 8) + lf.cut;   /* (32 767 * 6 400 < 2^31) */
     fx.dark_a = DARK_A[idx < 0 ? 0 : idx > 100 ? 100 : idx];
-    fx.lmod = 32768 + (br_sine(br.ph[2]) * br.a_lvl >> 15);
+    fx.lmod = 32768 + (br_sine(br.ph[2]) * br.a_lvl >> 15) + lf.lvl;
+    fx.lmod = fx.lmod < 0 ? 0 : fx.lmod;
+    idx = (fx.gain >> 3) * (32768 + lf.gmod) >> 12;   /* the fuzz's gain with the LFO (Q8; the shaper's input stays < 2^31) */
+    fx.gainm = idx > 70000 ? 70000 : idx < 0 ? 0 : idx;
 }

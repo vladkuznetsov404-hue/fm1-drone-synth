@@ -102,7 +102,8 @@ static void reset_state(void)                    /* the app's RAM as at power-on
     memset(&snd, 0, sizeof snd);
     memset(snd.fm_last, 0xFF, sizeof snd.fm_last);
     snd.croot = -1;                              /* (as the initialiser: no chord latched, the chord watch not yet seen) */
-    snd.chsig = 0xFFu;
+    snd.chsig = snd.scsig = 0xFFu;
+    snd.ckey = -1;
     memset(&scope, 0, sizeof scope);
     memset(&fx, 0, sizeof fx);
     memset(fx.last, 0xFF, sizeof fx.last);       /* (-1: never updated, as at power-on) */
@@ -132,9 +133,9 @@ static void screen(void)
     static const struct { uint32_t btn, page; const char *shot; } PAGES[] = {
         {B_EDIT, PG_EDIT, "build/shots/edit_saw.png"}, {B_FX, PG_FX, "build/shots/fx.png"},
         {B_ENV, PG_ENV, "build/shots/env.png"},        {B_LFO, PG_LFO, "build/shots/lfo.png"},
+        {B_LFO, PG_LFO2, "build/shots/lfo2.png"},
         {B_SCL, PG_SCL, "build/shots/scl.png"},
         {B_ARP, PG_DELAY, "build/shots/delay.png"},    {B_ARP, PG_DELAY2, "build/shots/delay2.png"},
-        {B_ARP, PG_DELAY3, "build/shots/delay3.png"},  {B_ARP, PG_DELAY4, "build/shots/delay4.png"},
         {B_SEQ, PG_TAPE, "build/shots/tape.png"},      {B_SEQ, PG_TAPE2, "build/shots/tape2.png"},
         {B_GLO, PG_GLO, "build/shots/glo.png"},        {B_HOME, PG_HOME, "build/shots/home_again.png"},
     };
@@ -171,10 +172,16 @@ static void screen(void)
         host_png(PAGES[i].shot);
         check(PAGES[i].shot + 12, ui.page == PAGES[i].page && ink_rows(0, 24) > 8u && ink_rows(52, 212) > 40u);
     }
+    ui_page(PG_EDIT);
+    host_frame();
+    turn(EN_SELECT, 1);
+    check("SELECT: the next body (QUASAR), the page stays", set.g[G_MODE] == MODE_SHOE && ui.page == PG_EDIT &&
+          str_eq(ui.toast, "QUASAR"));
+    turn(EN_SELECT, 1);
+    check("SELECT again: round to the BLACK HOLE", set.g[G_MODE] == MODE_HARSH && str_eq(ui.toast, "BLACK HOLE"));
     turn(EN_SELECT, -1);
-    check("SELECT left from HOME: wraps to GLO", ui.page == PG_GLO);
-    turn(EN_SELECT, 2);
-    check("SELECT right twice: EDIT", ui.page == PG_EDIT);
+    turn(EN_SELECT, -1);
+    check("SELECT left twice: back where it was", set.g[G_MODE] == MODE_HARSH);
     turn(EN_ALGO, 1);
     host_png("build/shots/edit_fm.png");
     check("ALGORITHM right: FM, EDIT shows the FM values", cur.engine == ENG_FM && cell(PG_EDIT, 0) == P_RATIO);
@@ -192,7 +199,7 @@ static void screen(void)
     snd.last_midi = 1;
     for (r = 0; r < 2u; r++) {
         cur.engine = (uint8_t)r;
-        for (p = 0; p < NPG * 2u; p++) {         /* (the pages twice: HARSH's and SHOEGAZE's cells) */
+        for (p = 0; p < NPG * NMODE; p++) {      /* (the pages once per body) */
             set.g[G_MODE] = (int16_t)(p / NPG);
             ui_page(p % NPG);
             host_frame();
@@ -328,28 +335,23 @@ static void controls(void)
     press(B_ARP);
     check("ARP: the DELAY page, ARP lit", ui.page == PG_DELAY && host_led[panel.btn[B_ARP]]);
     press(B_ARP);
-    check("ARP again: DELAY 2 (WOBBLE, DULL)", ui.page == PG_DELAY2 && cell(PG_DELAY2, 0) == C_G + G_DWOB);
+    check("ARP again: ANOMALY 2 (ORBIT, DULL)", ui.page == PG_DELAY2 && cell(PG_DELAY2, 0) == C_G + G_DWOB);
     press(B_ARP);
-    check("ARP again: DELAY 3 (GRAINS, SIZE)", ui.page == PG_DELAY3 && cell(PG_DELAY3, 0) == C_G + G_GMIX);
-    press(B_ARP);
-    check("ARP again: DELAY 4 (SCATTER, REVERSE)", ui.page == PG_DELAY4 && cell(PG_DELAY4, 0) == C_G + G_GSCAT);
-    press(B_ARP);
-    check("ARP once more: round to DELAY", ui.page == PG_DELAY);
+    check("ARP once more: round to ANOMALY (two pages: no HEADS, no grain pages)", ui.page == PG_DELAY);
     turn(EN_K1, 5);
     turn(EN_K2, -5);
     turn(EN_K3, 7);
     check("DELAY, KNOBS 1 2 3: TIME, REPEATS, ECHO move", set.g[G_DT] == GP[G_DT].def + 5 &&
           set.g[G_DFB] == GP[G_DFB].def - 5 && set.g[G_DMIX] == GP[G_DMIX].def + 7);
-    {
-        int32_t h0 = set.g[G_DHEADS];
-        turn(EN_K4, 1);
-        check("DELAY, KNOB 4: HEADS steps 1, 2, 3, 12, 13, 23, 123 (from 12: 13)", h0 == 3 && set.g[G_DHEADS] == 5);
-        turn(EN_K4, 9);
-        check("HEADS: clamped at all three, and back to one", set.g[G_DHEADS] == 7);
-        turn(EN_K4, -9);
-        check("HEADS: one head at the low end", set.g[G_DHEADS] == 1);
-        set.g[G_DHEADS] = (int16_t)h0;
-    }
+    turn(EN_K4, 9);
+    check("ANOMALY, KNOB 4: MASS moves (and reaches its own limit)", set.g[G_AMASS] == GP[G_AMASS].def + 9);
+    turn(EN_K4, 100);
+    check("MASS: clamped at 100", set.g[G_AMASS] == 100);
+    dly_mass_apply();
+    check("MASS 100 -> the grains' settings (echo off: none; GRAIN PITCH 50: down only; REVERSE 35; FEED 30)",
+          set.g[G_GMIX] == (set.g[G_DMIX] ? 55 : 0) && set.g[G_GPITCH] == 50 && set.g[G_GREV] == 35 && set.g[G_GFB] == 30 &&
+          set.g[G_DHEADS] == 7);
+    set.g[G_AMASS] = GP[G_AMASS].def;
     press(B_HOME);
 
     /* the cassette's transport (its clock is the audio: frames and audio run together here) */
@@ -449,22 +451,26 @@ static void controls(void)
                   tape.nudge > sp0);
         }
     }
-    {   /* HARSH <-> SHOEGAZE from GLO: its own bank, colours, FX page */
+    {   /* SELECT turns the body: its own bank, colours, FX page; an edit is kept in the body it was made in */
         uint16_t theme0;
-        ui_page(PG_GLO);
+        int16_t m0;
+        ui_page(PG_EDIT);
         host_frame();
         theme0 = T_THEME;
-        turn(EN_K4, 1);
-        check("GLO KNOB 4: SHOEGAZE, its toast, its colours", set.g[G_MODE] == MODE_SHOE && str_eq(ui.toast, "SHOEGAZE") &&
+        cur.p[P_LAYERS] = 2;                     /* an unsaved edit in the black hole */
+        turn(EN_SELECT, 1);
+        check("SELECT: QUASAR, its toast, its colours", set.g[G_MODE] == MODE_SHOE && str_eq(ui.toast, "QUASAR") &&
               T_THEME != theme0);
         check("... its sound loaded from its own bank", memcmp(&cur, &bank.s[set.g[G_SLOT]], sizeof cur) == 0);
         ui_page(PG_FX);
         host_frame();
         host_png("build/shots/fx_shoe.png");
-        check("SHOEGAZE FX: the pedals are CHORUS and REVERB", cell(PG_FX, 1) == P_CHORUS && cell(PG_FX, 2) == P_REVERB);
-        ui_page(PG_GLO);
-        turn(EN_K4, -1);
-        check("... and back: HARSH, its colours", set.g[G_MODE] == MODE_HARSH && T_THEME == theme0);
+        check("QUASAR FX: its own four cells", cell(PG_FX, 1) == P_CHORUS && cell(PG_FX, 2) == P_REVERB);
+        turn(EN_SELECT, -1);
+        m0 = set.g[G_MODE];
+        check("... and back: BLACK HOLE, its colours, the edit made there still there (unsaved)",
+              m0 == MODE_HARSH && T_THEME == theme0 && cur.p[P_LAYERS] == 2);
+        cur = bank.s[set.g[G_SLOT]];
     }
 
     /* the SAVE dialog */
@@ -563,6 +569,17 @@ static void persistence(void)
 }
 
 /* ---------------------------------------------------------------- sound --- */
+static double tone_amp(const int32_t *b, uint32_t frames, double f)   /* the amplitude of one frequency in the left channel (a projection) */
+{
+    double c = 0, sn_ = 0, w = 6.283185307179586 * f / 44100.0;
+    uint32_t i;
+    for (i = 0; i < frames; i++) {
+        c += b[2u * i] * cos(w * i);
+        sn_ += b[2u * i] * sin(w * i);
+    }
+    return 2.0 * sqrt(c * c + sn_ * sn_) / frames;
+}
+
 static double pitch(const int32_t *b, uint32_t frames)   /* rising zero crossings per second, left channel */
 {
     uint32_t i, n = 0, first = 0, last = 0;
@@ -1107,14 +1124,25 @@ static void scope_shot(void)
     cur.p[P_MASSA] = 100;
     run_frames(60);
     host_png("build/shots/fx_drone_hot.png");
+    cur.p[P_LSHAPE] = 3;                         /* the LFO page at work: a square on the level */
+    cur.p[P_LDEST] = 2;
+    cur.p[P_LAMT] = 70;
+    cur.p[P_RATE] = 40;
+    ui_page(PG_LFO);
+    run_frames(40);
+    host_png("build/shots/lfo_live.png");
+    cur.p[P_LAMT] = 0;
+    cur.p[P_LSHAPE] = 0;
+    cur.p[P_LDEST] = 0;
+    cur.p[P_RATE] = 10;
     set.g[G_MODE] = MODE_SHOE;                   /* the same sky in SHOEGAZE: a quasar, its own four dials */
     cur = bank.s[1];
     app_palette();
     ui_page(PG_HOME);
     ui.full = 1;
     run_frames(30);
-    check("SHOEGAZE HOME: the quasar drawn, its dials MASSA BLOOM SHIMMER DARK", ink_rows(48, 152) > 40u &&
-          cell(PG_HOME, 1) == P_REVERB && cell(PG_HOME, 2) == P_CHORUS);
+    check("SHOEGAZE HOME: the quasar drawn, its dials MASSA SPIN BLOOM DARK", ink_rows(48, 152) > 40u &&
+          cell(PG_HOME, 1) == P_SPIN && cell(PG_HOME, 2) == P_REVERB);
     host_png("build/shots/home_quasar.png");
     set.g[G_MODE] = MODE_HARSH;
     cur = bank.s[1];
@@ -1218,6 +1246,25 @@ static void tape_audio(void)
     set.g[G_SPEED] = 75;
     host_render(buf, S);
     check("SPEED 75: varispeed (131 Hz +-1 %)", fabs(pitch(buf, S) / (174.61 * 0.75) - 1.0) < 0.01);
+    {                                            /* the range now: a tenth .. three times */
+        static const int sp[4] = {25, 10, 200, 300};
+        static const double tol[4] = {0.02, 0.07, 0.01, 0.01};
+        uint32_t q;
+        char t1[16], t2[16], t3[16];
+        for (q = 0; q < 4u; q++) {
+            set.g[G_SPEED] = (int16_t)sp[q];
+            host_render(buf, S);
+            host_render(buf, 2u * S);
+            check(q == 0 ? "SPEED 25: two octaves down (43.7 Hz +-2 %)" : q == 1 ? "SPEED 10: a tenth (17.5 Hz +-7 %)" :
+                  q == 2 ? "SPEED 200: an octave up (349.2 Hz +-1 %)" : "SPEED 300: three times (523.8 Hz +-1 %)",
+                  fabs(pitch(buf, 2u * S) / (174.61 * sp[q] / 100.0) - 1.0) < tol[q] && peak(buf, 2u * S) < 32000);
+        }
+        par_text(t1, sizeof t1, 100, F_SPEED);
+        par_text(t2, sizeof t2, 10, F_SPEED);
+        par_text(t3, sizeof t3, 300, F_SPEED);
+        check("SPEED reads X1.00, X0.10 and X3.00 at 100, 10 and 300", !strcmp(t1, "X1.00") && !strcmp(t2, "X0.10") && !strcmp(t3, "X3.00") &&
+              GP[G_SPEED].lo == 10 && GP[G_SPEED].hi == 300);
+    }
     set.g[G_SPEED] = 100;
     press_t(B_HOME);
 
@@ -1358,6 +1405,7 @@ static void dly_setup(int t, int fb, int mix, int heads, int wob, int dull)
     set.g[G_DWOB] = (int16_t)wob;
     set.g[G_DDULL] = (int16_t)dull;
     set.g[G_DGLIDE] = 100;                       /* (the slowest motor: the bend tests below were made for it) */
+    set.g[G_AMASS] = 0;                          /* (no stretch: the heads at D, 2 D, 3 D exactly) */
 }
 
 static void dly_run(const int32_t *in, uint32_t frames, int32_t *o)   /* whole blocks through dly_process */
@@ -1450,6 +1498,37 @@ static void delay_audio(void)
     at[0] = argmax_abs(dl_out, 2000, 40000);
     check("HEADS 2 only: the echo at 2 D", at[0] + 8u >= 2u * d && at[0] <= 2u * d + 90u &&
           abs(dl_out[2u * (d + 32u)]) < 300);
+
+    /* MASS: a mass in the tape stretches the gaps between the echoes: head n at n D (1 + (n - 1) 0.30) at MASS 100 */
+    dly_setup(45, 0, 100, 7, 0, 0);
+    set.g[G_AMASS] = 100;
+    burst(90000);
+    dly_run(dl_in, 90000, dl_out);
+    at[0] = argmax_abs(dl_out, 2000, d + 2000u);
+    at[1] = argmax_abs(dl_out, 3u * d / 2u, 7u * d / 2u);
+    at[2] = argmax_abs(dl_out, 19u * d / 5u, 6u * d);
+    check("MASS 100: head 1 still at D (the stretch starts with head 2)", at[0] + 8u >= d && at[0] <= d + 90u);
+    check("MASS 100: head 2 at 2.6 D (+-3 %), later than the 2 D of MASS 0",
+          at[1] > 2.6 * d * 0.97 && at[1] < 2.6 * d * 1.03 + 90.0);
+    check("MASS 100: head 3 at 4.8 D (+-3 %)", at[2] > 4.8 * d * 0.97 && at[2] < 4.8 * d * 1.03 + 90.0);
+    {                                            /* ORBIT: D itself sways (a sine of 0.35 Hz, up to 6 %) */
+        double lo = 1e18, hi = -1e18, lo0 = 1e18, hi0 = -1e18;
+        uint32_t k, pass;
+        for (pass = 0; pass < 2u; pass++) {
+            dly_setup(45, 0, 100, 1, pass ? 0 : 100, 0);
+            sine_in(0, 140000, 440.0, 8000.0);
+            for (k = 0; k + CTL <= 140000u; k += CTL) {
+                dly_run(dl_in + k, CTL, dl_out + 2u * k);
+                if (k > 20000u) {
+                    double v = dl.dprev;
+                    if (pass) { lo0 = v < lo0 ? v : lo0; hi0 = v > hi0 ? v : hi0; }
+                    else { lo = v < lo ? v : lo; hi = v > hi ? v : hi; }
+                }
+            }
+        }
+        check("ORBIT 100: D sways by +-6 % (peak to peak 10 .. 14 % of D)", (hi - lo) / ((hi + lo) / 2.0) > 0.10 && (hi - lo) / ((hi + lo) / 2.0) < 0.14);
+        check("ORBIT 0: D does not move (under 0.5 %)", (hi0 - lo0) / ((hi0 + lo0) / 2.0) < 0.005);
+    }
 
     /* MIX 0 is the dry signal itself */
     dly_setup(45, 60, 0, 7, 50, 40);
@@ -1687,7 +1766,7 @@ static void delay_audio(void)
             check("GRAINS REVERSE 100: the screen's windows are negative (backwards), none forwards", neg > 0 && pos == 0);
         }
 
-        dly_setup(45, 0, 0, 1, 0, 0);                          /* +12 st only: GRAIN PITCH 25 is {0, +12} */
+        dly_setup(45, 0, 0, 1, 0, 0);                          /* GRAIN PITCH 25 is {0, -12} */
         set.g[G_GMIX] = 100;
         set.g[G_GSIZE] = 20;
         set.g[G_GDENS] = 100;
@@ -1697,11 +1776,8 @@ static void delay_audio(void)
         sine_in(0, 44100, 440.0, 8000.0);
         dly_run(dl_in, 88200, dl_out);
         e1 = 0;
-        for (k = 0; k < 10u; k++) {                            /* the pitch of short stretches: 440 and 880 both turn up */
-            r2 = pitch(dl_out + 2u * (12000u + 3000u * k), 2800);
-            e1 += r2 > 800.0 && r2 < 960.0;
-        }
-        check("GRAIN PITCH 25: some grains are an octave up (880 Hz turns up in the output)", e1 >= 1.0);
+        e1 = tone_amp(dl_out + 2u * 20000u, 40000, 220.0);     /* the input has no 220 Hz in it: whatever there is, the grains made */
+        check("GRAIN PITCH 25: some grains are an octave down (220 Hz, which the 440 Hz input does not have, turns up: > 150)", e1 > 150.0);
         set.g[G_GFB] = 100;
         set.g[G_GMIX] = 100;
         set.g[G_GPITCH] = 100;
@@ -2242,6 +2318,172 @@ static void scl_glide(void)
     host_render(buf, 64);
 }
 
+static void scl_live(void)
+{
+    int32_t a, b;
+    reset_state();
+    host_boot();
+    set.g[G_OCT] = 0;
+    set.g[G_SCALE] = 1;
+    set.g[G_ROOT] = 9;
+    set.g[G_CHORD] = 0;
+    set.g[G_SLIDE] = 0;
+    tap_key(0);
+    tap_key(2);
+    check("SCL live: two keys latched in A minor", n_held() == 2 && has_note((uint32_t)key_note(0)) && has_note((uint32_t)key_note(2)));
+    set.g[G_ROOT] = 2;                           /* ROOT turned while they sound: the notes follow their keys */
+    host_render(buf, CTL);
+    a = key_note(0);
+    b = key_note(2);
+    check("ROOT turned: the sounding notes move to where their keys are now", a != 57 && n_held() == 2 && has_note((uint32_t)a) && has_note((uint32_t)b));
+    set.g[G_SCALE] = 0;                          /* scale off: keys are chromatic again, the same keys keep sounding */
+    host_render(buf, CTL);
+    check("SCALE off (MANUAL): they move to the chromatic notes of the same keys",
+          n_held() == 2 && has_note((uint32_t)key_note(0)) && has_note((uint32_t)key_note(2)));
+    tap_key(0);
+    tap_key(2);
+    set.g[G_SCALE] = 1;
+    set.g[G_CHORD] = 1;
+    tap_key(0);
+    check("a chord on key 0 sounds", n_held() == 2 && has_note((uint32_t)key_note(0)));
+    set.g[G_SCALE] = 2;                          /* PHRYGIAN: the chord root is the new key 0 note */
+    host_render(buf, CTL);
+    check("SCALE turned while a chord sounds: the chord follows its key", n_held() == 2 && has_note((uint32_t)key_note(0)));
+    app_audio_stop();
+    host_render(buf, 64);
+}
+
+static double rms_ch(const int32_t *b, uint32_t frames, uint32_t ch)   /* one channel of an interleaved stereo block */
+{
+    double a = 0;
+    uint32_t i;
+    for (i = 0; i < frames; i++)
+        a += (double)b[2u * i + ch] * b[2u * i + ch];
+    return sqrt(a / frames);
+}
+
+static void rotor_lfo(void)
+{
+    uint32_t i, same, w, sh;
+    double lo = 1e9, hi = 0, r, e;
+    int32_t mn, mx;
+    reset_state();
+    host_boot();
+    set.g[G_OCT] = 0;
+    set.g[G_SLIDE] = 0;
+    cur.p[P_SPIN] = 0;
+    cur.p[P_BREATH] = 0;
+    tap_key(0);
+    host_render(buf, BLOCKS(FS));
+    for (i = same = 0; i < FS; i++)
+        same += buf[2u * i] == buf[2u * i + 1u];
+    {                                            /* the factory sounds: the quasars turn at their own speeds, the black hole's none */
+        snd_t t1, t2, t3;
+        snd_default_m(&t1, 7, MODE_SHOE);
+        snd_default_m(&t2, 14, MODE_SHOE);
+        snd_default_m(&t3, 7, MODE_HARSH);
+        check("QUASAR factory sounds turn (slot 8: 45, slot 15: 70), BLACK HOLE's do not, INIT is still",
+              t1.p[P_SPIN] == 45 && t2.p[P_SPIN] == 70 && t3.p[P_SPIN] == 0 && SP[P_SPIN].def == 0);
+    }
+    check("SPIN 0: the two channels are the same sound", same == FS && !sp.on);
+    cur.p[P_SPIN] = 40;                          /* 2 Hz */
+    host_render(buf, BLOCKS(FS / 10u));
+    check("SPIN has weight: 0.1 s after the turn the rotor is still far below its speed", spin_hz100 < 120u);
+    host_render(buf, BLOCKS(FS * 2u));
+    host_render(buf, BLOCKS(FS * 2u));
+    check("... after 4 s it has the speed (2.0 Hz +-10 %)", spin_hz100 > 180u && spin_hz100 < 224u);
+    for (w = 0; w < 10u; w++) {                  /* a second in 100 ms windows: the sound swings between the speakers */
+        double rl = rms_ch(buf + 2u * (w * 4410u), 4410, 0), rr = rms_ch(buf + 2u * (w * 4410u), 4410, 1);
+        r = rl / (rr + 1.0);
+        lo = r < lo ? r : lo;
+        hi = r > hi ? r : hi;
+    }
+    check("SPIN 40: the left and the right trade the level (ratio L/R swings through 1.5 and 0.67)", hi > 1.5 && lo < 0.67);
+    e = rms_ch(buf, FS * 2u, 0);
+    check("... and the rotor keeps the level in a sane range (no gain above the input's)", e > 100.0 && hi < 40.0);
+    cur.p[P_SPIN] = 0;
+    for (sh = 0; sh < 3u; sh++)
+        host_render(buf, BLOCKS(FS * 2u));
+    for (i = same = 0; i < FS; i++)
+        same += buf[2u * i] == buf[2u * i + 1u];
+    check("SPIN back to 0: the rotor spins down and the stage stops (channels equal again)", same == FS && !sp.on);
+
+    reset_state();
+    host_boot();
+    set.g[G_OCT] = 0;
+    cur.p[P_BREATH] = 0;
+    cur.p[P_RATE] = 100;                         /* 1 Hz */
+    cur.p[P_LAYERS] = 1;                         /* one saw: no beating between layers to muddy the level */
+    cur.p[P_ATTACK] = 0;
+    for (sh = 0; sh < 5u; sh++) {                /* each shape over three cycles */
+        cur.p[P_LSHAPE] = (int16_t)sh;
+        mn = 1 << 30;
+        mx = -(1 << 30);
+        for (i = 0; i < 4200u; i++) {
+            lfo_block();
+            mn = lf.v < mn ? lf.v : mn;
+            mx = lf.v > mx ? lf.v : mx;
+        }
+        check(sh == 0 ? "LFO SINE: reaches both ends" : sh == 1 ? "LFO TRIANGLE: reaches both ends" :
+              sh == 2 ? "LFO RAMP: reaches both ends" : sh == 3 ? "LFO SQUARE: settles at both ends" :
+                        "LFO RANDOM: wanders over most of the range",
+              sh == 4 ? mx - mn > 25000 && mx <= 32768 && mn >= -32768 : mx > 30000 && mn < -30000);
+    }
+    cur.p[P_LSHAPE] = 3;
+    cur.p[P_LAMT] = 100;
+    cur.p[P_LDEST] = 2;                          /* LEVEL */
+    set.g[G_OCT] = 0;
+    tap_key(0);
+    host_render(buf, BLOCKS(FS));
+    host_render(buf, BLOCKS(FS * 2u));
+    lo = 1e9;
+    hi = 0;
+    for (w = 0; w < 20u; w++) {                  /* 2 s in 100 ms windows */
+        r = rms_ch(buf + 2u * (w * 4410u), 4410, 0);
+        lo = r < lo ? r : lo;
+        hi = r > hi ? r : hi;
+    }
+    check("LFO to LEVEL, SQUARE, DEPTH 100, 1 Hz: the drone's level swings at least 1.5 : 1", hi / (lo + 1.0) > 1.5);
+    cur.p[P_LAMT] = 0;
+    host_render(buf, BLOCKS(FS));
+    host_render(buf, BLOCKS(FS * 2u));
+    lo = 1e9;
+    hi = 0;
+    for (w = 0; w < 20u; w++) {
+        r = rms_ch(buf + 2u * (w * 4410u), 4410, 0);
+        lo = r < lo ? r : lo;
+        hi = r > hi ? r : hi;
+    }
+    check("... DEPTH 0: it does not (under 1.15 : 1)", hi / (lo + 1.0) < 1.15);
+    cur.p[P_LAMT] = 100;
+    cur.p[P_LDEST] = 3;                          /* FUZZ: the gain breathes */
+    mn = 1 << 30;
+    mx = 0;
+    for (i = 0; i < 1400u; i++) {
+        lfo_block();
+        breath_block();
+        mn = fx.gainm < mn ? fx.gainm : mn;
+        mx = fx.gainm > mx ? fx.gainm : mx;
+    }
+    check("LFO to FUZZ: the gain moves by +-40 % and stays inside the shaper's headroom (<= 70 000)", mx * 10 > mn * 17 && mx <= 70000);
+    cur.p[P_LDEST] = 0;                          /* PITCH: +-30 cents as a Q24 ratio offset */
+    mn = 1 << 30;
+    mx = -(1 << 30);
+    for (i = 0; i < 1400u; i++) {
+        lfo_block();
+        mn = lf.pm < mn ? lf.pm : mn;
+        mx = lf.pm > mx ? lf.pm : mx;
+    }
+    check("LFO to PITCH, SQUARE, DEPTH 100: +-30 cents (Q24 ratio +-290 000 +- 3 %)", mx > 280000 && mx < 300000 && mn < -280000 && mn > -300000);
+    cur.p[P_LDEST] = 4;
+    cur.p[P_SPIN] = 0;
+    for (i = 0; i < 1400u; i++)
+        lfo_block();
+    check("LFO to SPIN: it moves the rotor's speed by up to +-100 (and is the only target moving)", lf.spin != 0 && lf.pm == 0 && lf.lvl == 0 && lf.gmod == 0);
+    app_audio_stop();
+    host_render(buf, 64);
+}
+
 int main(void)
 {
     if (system("mkdir -p build/shots"))
@@ -2261,6 +2503,8 @@ int main(void)
     shoe_audio();
     scl_audio();
     scl_glide();
+    scl_live();
+    rotor_lfo();
     delay_audio();
     puts(failed ? "APP TEST FAILED" : "app test passed");
     return failed ? 1 : 0;

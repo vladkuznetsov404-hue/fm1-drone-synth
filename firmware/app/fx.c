@@ -54,6 +54,7 @@ enum { FV_DRIVE, FV_TONE, FV_CAB, FV_LEVEL, FV_MASSA, FV_SUB, FV_DARK, FV_N };
 static struct {
     int16_t last[FV_N];          /* the values fx_update last used (-1: never) */
     int32_t gain;                /* the fuzz's input gain, Q8 */
+    int32_t gainm;               /* ... with the LFO on it (breath.c, per block) */
     int32_t tone, level;         /* Q14 (0..1), Q15 at the output */
     int32_t dark_a;              /* the DARK one-poles' coefficient, Q14 (with BREATH's LFO: breath.c, per block) */
     int32_t lmod;                /* BREATH's level factor, Q15 (breath.c, per block) */
@@ -123,7 +124,7 @@ static inline __attribute__((always_inline)) int32_t fx_biquad(int32_t x, const 
 static void fx_process(int32_t *out, uint32_t n, int active)
 {
     uint32_t i, k;
-    int32_t lvl;
+    int32_t lvl, gn;
     if (fx.bypass)
         return;
     if (!active) {
@@ -141,6 +142,7 @@ static void fx_process(int32_t *out, uint32_t n, int active)
         }
     } else
         fx.idle = 0;
+    gn = fx.gainm ? fx.gainm : fx.gain;
     lvl = fx.level * fx.lmod >> 15;              /* (11 000 * 38 928 < 2^31) */
     for (i = 0; i < n; i++) {
         int32_t x = out[2u * i], y, v;
@@ -149,7 +151,7 @@ static void fx_process(int32_t *out, uint32_t n, int active)
         fx.dc1x = x;
         fx.dc1y = y;
         y = y > 30000 ? 30000 : y < -30000 ? -30000 : y;
-        v = y * fx.gain >> 8;                    /* (30 000 * 64 304 < 2^31) */
+        v = y * gn >> 8;                    /* (30 000 * 64 304 < 2^31) */
         if (v >= 0) {                            /* the shaper: v - v^3 / 6.75 up to 1.5 (out 1.0) ... */
             v = v > 24576 ? 24576 : v;
             v -= ((v * v >> 14) * v >> 14) * 2427 >> 14;

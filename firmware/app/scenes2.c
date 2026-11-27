@@ -33,6 +33,8 @@ static void sc_quasar(int32_t cx, int32_t cy, int32_t rs, int32_t lev, int32_t t
 {
     int32_t i, j, k, dir, len = 26 + mas * 12 / 100 + lev / 16, rx = 40 + dark / 3 + lev / 20, ry = rx / 6 + 2, px, py, x0 = 0, y0 = 0;
     static const uint8_t SH[3] = {100, 78, 56};
+    int32_t sp = spin_pub * 120 / 65536, sa = spin_hz100 ? 30 + spin_hz100 / 10 : 0;   /* SPIN: the phase, and how far the jets tilt */
+    sa = sa > 100 ? 100 : sa;
     for (k = 0; k < 3; k++) {                    /* the disc: three bands, dim outside to hot inside */
         uint16_t c = k == 0 ? T_DIM : k == 1 ? T_THEME : T_ACCENT;
         for (i = 0; i <= 60; i++) {
@@ -45,11 +47,16 @@ static void sc_quasar(int32_t cx, int32_t cy, int32_t rs, int32_t lev, int32_t t
             y0 = py;
         }
     }
+    if (sa)                                      /* SPIN: three hot knots racing round the disc */
+        for (k = 0; k < 3; k++) {
+            int32_t a = sp + k * 40;
+            sc_disc(cx + rx * cs(a) / 127, cy - ry * sn(a) / 127, cs(a) < 0 ? 3 : 2, T_ACCENT);
+        }
     for (dir = -1; dir <= 1; dir += 2)           /* the jets: they widen away from the core and cool */
         for (j = 0; j < len; j += 2) {
             int32_t wob = scope.y[(uint32_t)(j * 3 + t * 2 + (dir > 0 ? 60 : 0)) % SCOPE_N] * (3 + lev / 30) * j / (len * m), w = 2 + j / 8;
             uint16_t c = j < len / 3 ? T_ACCENT : j < len * 2 / 3 ? T_THEME : T_MID;
-            cv_rect(cx + wob - w / 2, dir < 0 ? cy - rs - j - 2 : cy + rs + j, w, 2, c);
+            cv_rect(cx + wob - w / 2 + sn(sp + (dir > 0 ? 60 : 0)) * j * sa / 38100, dir < 0 ? cy - rs - j - 2 : cy + rs + j, w, 2, c);   /* (SPIN: the axis precesses like a lighthouse's beam) */
         }
     sc_disc(cx, cy, rs + 4 + lev / 40, T_TINT);  /* the core: a glow, a hot disc, a white heart */
     sc_disc(cx, cy, rs + 1, T_THEME);
@@ -201,9 +208,30 @@ static void sc_cassette(uint32_t y)              /* 240 x 124 */
     else if (tape.gon)
         cv_text(134, 74, &AF_S, "SHIFTED", T_THEME);
     if (cut)
-        cv_text(134, 92, &AF_S, "SLICE LOOPS", T_ACCENT);
+        cv_text(134, 80, &AF_S, "SLICE LOOPS", T_ACCENT);
     else if (tape.st == TP_EMPTY)
-        cv_text(134, 92, &AF_S, "REC: CUT A SLICE", T_DIM);
+        cv_text(134, 80, &AF_S, "REC: CUT A SLICE", T_DIM);
+    {                                            /* what the two knobs that were DECAY and WEAR do, drawn */
+        int32_t f = set.g[G_DECAY], ag = set.g[G_WEAR], bh = 12 << 8, j;
+        for (j = 0; j < 5; j++) {                /* FORGET: five laps over the same tape, each keeps (100 - FORGET) % of the one before */
+            cv_rect(134 + j * 8, 108 - (bh >> 8), 5, (bh >> 8) + 1, j ? T_MID : T_THEME);
+            bh = bh * (100 - f) / 100;
+        }
+        cv_text(134, 110, &AF_S, "FORGET", T_DIM);
+        {                                        /* AGE: a wobbling line (wow), hiss specks, and a duller trace as it grows */
+            int32_t px = 0, py0 = 0, amp = ag * 5 / 100;
+            for (j = 0; j < 44; j++) {
+                int32_t py = sn(j * 4 + (int32_t)(fm1_ms / 90u)) * amp / 127;
+                if (j)
+                    cv_line(188 + px, 102 - py0, 188 + j, 102 - py, ag > 60 ? T_MID : T_THEME);
+                px = j;
+                py0 = py;
+            }
+            for (j = 0; j < ag / 12; j++)
+                cv_rect(188 + (j * 37 + (int32_t)(fm1_ms / 130u) * 11) % 44, 96 + (j * 53 + (int32_t)(fm1_ms / 130u) * 7) % 12, 1, 1, T_DIM);
+            cv_text(188, 110, &AF_S, "AGE", T_DIM);
+        }
+    }
     cv_blit(0, y);
 }
 
@@ -227,59 +255,6 @@ static void sc_pads(uint32_t y)                  /* 240 x 124 */
 }
 
 /* ---- the grains (DELAY 3, 4): the tape line with the grains moving over it ---- */
-static void sc_grains(uint32_t y)                /* 240 x 124 */
-{
-    int32_t x, j, sz = set.g[G_GSIZE], scat = set.g[G_GSCAT], L = (20 + sz * 6) * 441 / 10, lo, hi, live = 0;
-    uint32_t w = dl.w_pub;
-    char b[24];
-    lo = 64 + (L >> 3);
-    hi = lo + (32000 - lo) * scat / 100;
-    cv_begin(240, 124, T_BG);
-    cv_text(8, 0, &AF_S, "GRAIN DELAY", T_MID);
-    par_text(b, sizeof b, sz, F_GMS);
-    cv_text_r(232, 0, &AF_M, b, T_TEXT, T_BG);
-    cv_rect(8, 62, 224, 1, T_LINE);
-    for (x = 0; x < 224; x++) {                                /* what is on the tape: the newest at the right */
-        int32_t m = 0, s;
-        for (s = 0; s < 6; s++) {
-            int32_t c = dl_cells[(w - 1u - (uint32_t)((223 - x) * 146 + s * 24)) & DL_MASK];
-            c = c < 0 ? -c : c;
-            m = c > m ? c : m;
-        }
-        s = sc_bits(m) - 5;
-        if (s > 0)
-            cv_rect(8 + x, 62 - s * 2, 1, 4 * s + 1, T_DIM);
-    }
-    cv_rrect(226, 40, 12, 44, 2, T_REC, T_BG);                 /* the record head, where the tape is written */
-    cv_text_in(226, 55, 12, &AF_S, "R", T_INK, T_REC);
-    for (j = 0; j < (int32_t)DL_NG; j++) {                     /* the grains: a bar as tall as its window is open */
-        int32_t gw = dl.gp_w[j], gx, h;
-        if (!gw)
-            continue;
-        live++;
-        gx = 224 - (dl.gp_gap[j] * 224 >> 15);
-        h = (gw < 0 ? -gw : gw) * 36 / 255;
-        cv_rect(8 + gx - 1, 62 - h, 3, 2 * h + 1, gw < 0 ? T_REC : T_ACCENT);
-        cv_rect(8 + gx - 3, 62 + h, 7, 1, gw < 0 ? T_REC : T_ACCENT);
-        cv_rect(8 + gx - 3, 62 - h, 7, 1, gw < 0 ? T_REC : T_ACCENT);
-    }
-    {                                                          /* where grains may start: SIZE puts the nearest, SCATTER the rest */
-        int32_t xl = 232 - (lo * 224 >> 15), xh = 232 - (hi * 224 >> 15);
-        cv_rect(xh, 98, xl - xh + 1, 2, T_THEME);
-        cv_rect(xh, 94, 1, 10, T_THEME);
-        cv_rect(xl, 94, 1, 10, T_THEME);
-        cv_text_in(8, 106, 224, &AF_S, "WHERE THE GRAINS START", T_MID, T_BG);
-    }
-    if (!set.g[G_GMIX])
-        cv_text_in(0, 24, 240, &AF_M, "GRAINS OFF (KNOB 1)", T_DIM, T_BG);
-    else {
-        num(b, live);
-        str_cat(b, " GRAINS", sizeof b);
-        cv_text(8, 17, &AF_S, b, T_THEME);
-    }
-    cv_blit(0, y);
-}
-
 /* ---- the scale wheel (SCL): the twelve notes round a circle ---- */
 static void sc_scl(uint32_t y)                   /* 240 x 124 */
 {

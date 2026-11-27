@@ -138,3 +138,54 @@ static void shoe_process(int32_t *out, uint32_t n)
         sh.quiet = 0;
     }
 }
+
+/* ---- SPIN: the rotor (audio ISR, both bodies) -----------------------------------------------------------------------
+ * The sound turns between the two speakers like a Leslie's horn: a pan that swings from one side to the other, and a
+ * dip of the level twice a turn (the horn facing away and the other way round), so a single speaker hears it too. SPIN
+ * is the rotor's speed: 0 = still (the stage is skipped, the two channels are the same sound), 1 = a slow breath of
+ * 0.12 Hz, 100 = a whirl of 12 Hz, quadratic in between (most of the knob is slow). The rotor has weight: the speed it
+ * is going at follows the knob over ~0.7 s, so a turn is an acceleration or a slowing down, the "вжух". The depth
+ * comes in over the first fifth of the knob. The gains are worked out once per block and slide between blocks.
+ * LFO target SPIN adds up to +-100 to the knob. spin_pub is the rotor's phase for the picture. */
+#define SP_INC 31165u            /* 0.01 Hz as a per-block phase step: 2^32 * 0.01 * CTL / FS */
+
+static struct {
+    uint32_t ph, inc;            /* the rotor's phase, its speed now (per block) */
+    int32_t gl, gr;              /* the channels' gains now, Q20 */
+    int32_t dl, dr;              /* ... and the steps per sample */
+    uint8_t on;
+} sp;
+static volatile uint16_t spin_pub;   /* the rotor's phase (16 bits) and ... */
+static volatile uint16_t spin_hz100; /* ... its speed in 0.01 Hz, for the picture */
+
+static void spin_block(uint32_t n)
+{
+    int32_t s = cur.p[P_SPIN] + lf.spin, a, u, v, gl, gr, tr, tgt;
+    s = s < 0 ? 0 : s > 100 ? 100 : s;
+    tgt = s ? (int32_t)(12 + 1188 * s * s / 10000) : 0;           /* 0.01 Hz */
+    {
+        int32_t want = tgt * (int32_t)SP_INC, d = want - (int32_t)sp.inc;
+        sp.inc = (uint32_t)((d > -512 && d < 512) ? want : (int32_t)sp.inc + (d >> 9));
+    }
+    if (!s && !sp.inc) {
+        sp.on = 0;
+        sp.gl = sp.gr = 1 << 20;
+        sp.dl = sp.dr = 0;
+        spin_hz100 = 0;
+        return;
+    }
+    sp.on = 1;
+    sp.ph += sp.inc;
+    spin_pub = (uint16_t)(sp.ph >> 16);
+    spin_hz100 = (uint16_t)(sp.inc / SP_INC);
+    a = (s > 20 ? 20 : s) * 16384 / 20;            /* the depth, Q14 (so a x (32 768 + u) stays below 2^31) */
+    u = br_sine(sp.ph);
+    v = br_sine(sp.ph << 1);
+    gl = 32768 - ((a * (32768 - u) >> 14) * 11469 >> 15);          /* pan: 1 - 0.35 a (1 - u) */
+    gr = 32768 - ((a * (32768 + u) >> 14) * 11469 >> 15);
+    tr = 32768 - ((a * (32768 - v) >> 14) * 4096 >> 15);           /* the dip: 1 - 0.125 a (1 - v) */
+    gl = gl * tr >> 15;
+    gr = gr * tr >> 15;
+    sp.dl = ((gl << 5) - sp.gl) / (int32_t)n;
+    sp.dr = ((gr << 5) - sp.gr) / (int32_t)n;
+}

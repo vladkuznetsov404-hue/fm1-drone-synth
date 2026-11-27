@@ -22,11 +22,19 @@
  * TAPE DRIVE drives the input into the saturation (and lowers its knee), FREEZE (a request from the pads) stops the
  * recording and feeds the heads back at unity: the loop holds what it has.
  *
- * GRAINS: up to six grains read the same line (a granular delay of the tape): each is a window (a triangle) over a
- * stretch of tape, started half its length behind the record head (SCATTER moves the start further back, up to the line's end), read at a pitch
- * (the set {0, +12, -12, +7, +19} st, more of it with GRAIN PITCH) and possibly backwards (REVERSE); DENSITY is how many
- * overlap. The spawn is per block (rare work: the divides live there), the grain loop is a read and a window per
- * sample per live grain. GRAIN FEED writes the grains' sum back into the line.
+ * MASS is what makes it an anomaly (docs/SPEC.md "ANOMALY"). A mass sits in the tape and bends time around it: the
+ * gaps between the echoes stretch (head n sits at n D (1 + (n - 1) B), B up to 0.3, so the second echo is late by up to
+ * 0.3 D and the third by 0.6 D, and each reads at the speed that matches while D moves), and it tears grains off the
+ * echoes: up to six, each a window (a triangle) over a stretch of tape started a little behind the record head, read
+ * slower than it was written (a fifth or an octave down, with unison at the top of the knob) and backwards one time in
+ * three at most, fed back a little, so they fall away like matter into a well. The knob sets all of it: the grains'
+ * level (up to 0.55), how many pitches they pick from, how often they run backwards and how much they feed back.
+ * The grains' own knobs (GRAINS, SIZE, DENSITY, GRAIN PITCH, SCATTER, REVERSE, GRAIN FEED) and HEADS are not on the
+ * screen any more: dly_mass_apply (main loop) writes them from MASS, so the engine below still reads its own settings,
+ * and all three heads play (HEADS defaults to 7). The spawn is per block (rare
+ * work: the divides live there), the grain loop is a read and a window per sample per live grain. ORBIT (the old
+ * WOBBLE, stored under the same id) adds a slow sway of D itself: a sine of 0.35 Hz, up to 6 % of D, so the echoes
+ * circle: they rise in pitch while D shortens and fall while it lengthens.
  *
  * Silence is free: a block of quiet input on an empty line costs a scan of the block; a line that has been quiet for
  * its whole length (3 s: the farthest head may still have an echo coming) is cleared (the one-pole and the integer
@@ -37,6 +45,7 @@
 #define DL_NG 6u                 /* grains at most */
 #define DL_WOW_INC 1558278u      /* 2^32 x 0.5 Hz x CTL / FS */
 #define DL_FLUT_INC 21815000u    /* ~7 Hz */
+#define DL_ORB_INC 1090700u      /* ORBIT's sway: 0.35 Hz per block */
 #define DL_QUIET (4u * DL_N)     /* a whole line's worth of samples (2.97 s) without a sound in or out: nothing is left in it */
 #define DL_OFF 132300u           /* 3 s */
 
@@ -47,14 +56,15 @@ static const int16_t DL_FRZ[4] = {0, 32767, 26420, 23745};  /* the loop at unity
 /* GLIDE: the most D changes per block (Q16 cells) so that TIME's whole range (8 900 x 0.1 ms) takes 0.15 x 40^(g/100)
  * seconds, in steps of ten (1 378 blocks a second). */
 static const int32_t DL_GLIDE[11] = {3110000, 2150000, 1487000, 1029000, 711000, 492000, 340000, 235000, 162600, 112500, 77800};
-static const int32_t GR_STEP[5] = {16384, 32768, 8192, 24550, 49093};   /* a grain's read speed: 0, +12, -12, +7, +19 st */
+static const int32_t GR_STEP[5] = {16384, 8192, 10923, 32768, 24550};   /* a grain's read speed: 0, -12, -7, +12, +7 st (down first: MASS wants falling) */
 
 static struct {
     uint32_t w, sub;             /* the tape: cells written, samples into the next one (0..3) */
     int32_t acc;                 /* the input of the cell being made */
     int32_t d, vel, dprev;       /* D (Q16 cells), its change per block, D with the wobble at the last block's end */
     int32_t lp, dc;              /* the loop's one-pole, and the DC block's mean (Q8: a coarser one stalls a few hundred LSB off) */
-    uint32_t wow, flut, quiet, off_n;
+    uint32_t wow, flut, orb, quiet, off_n;
+    int32_t bq;                  /* the stretch between the echoes, Q8 (0..77), following MASS smoothly */
     uint8_t dirty;               /* the line holds something (0: all zero) */
     volatile uint8_t freeze;     /* pads -> ISR: the loop holds (no recording, unity feedback) */
     volatile int32_t d_pub, v_pub;   /* ISR -> screen: D (Q16 cells) and its change per block */
@@ -136,6 +146,20 @@ static __attribute__((noinline)) void grain_spawn(uint32_t t0)   /* t0: the reco
     dl.gmask |= 1u << j;
 }
 
+/* MASS -> the grains' settings (main loop, every frame; the ISR reads them torn-free, each an int16): none while ECHO
+ * is 0 (the line is off then, and the grains would be a way of hearing the dry sound again). */
+static void dly_mass_apply(void)
+{
+    int32_t m = set.g[G_AMASS];
+    set.g[G_GMIX] = (int16_t)(set.g[G_DMIX] ? m * 55 / 100 : 0);
+    set.g[G_GSIZE] = 50;
+    set.g[G_GDENS] = 30;
+    set.g[G_GSCAT] = 40;
+    set.g[G_GPITCH] = (int16_t)(25 + m / 4);     /* 25 .. 50: two or three of {0, -12, -7} (never up) */
+    set.g[G_GREV] = (int16_t)(m * 35 / 100);
+    set.g[G_GFB] = (int16_t)(m * 3 / 10);
+}
+
 static void dly_process(int32_t *out, uint32_t n)
 {
     int32_t mix = set.g[G_DMIX], gmix = set.g[G_GMIX], wob = set.g[G_DWOB], mixq, gmq, fbq, gfq, hg, a_lp, da, db, dd, mod, big = 0;
@@ -174,14 +198,22 @@ static void dly_process(int32_t *out, uint32_t n)
     }
     dl.wow += DL_WOW_INC;
     dl.flut += DL_FLUT_INC;
-    mod = (br_sine(dl.wow) * wob * 23 >> 6) + (br_sine(dl.flut) * wob * 31 >> 12);   /* WOBBLE 100: ~18 cells, 0.4 */
+    mod = (br_sine(dl.wow) * wob * 23 >> 6) + (br_sine(dl.flut) * wob * 31 >> 12);   /* ORBIT 100: ~18 cells, 0.4 */
+    dl.orb += DL_ORB_INC;
+    mod += ((br_sine(dl.orb) >> 4) * (dl.d >> 12) >> 10) * wob * 5 >> 2;   /* ... and the sway: up to 6 % of D ((2 047 x 166 000) >> 10 x 500 < 2^31) */
+    {
+        int32_t bt = set.g[G_AMASS] * 77 / 100, bd = bt - dl.bq;
+        dl.bq = bd > -16 && bd < 16 ? bt : dl.bq + (bd >> 4);   /* the stretch glides to its value (no click as the knob turns) */
+    }
     da = dl.dprev;
     db = dl.d + mod;
     dd = (db - da) >> 5;                         /* D's change per sample */
     dl.dprev = db;
     for (j = 0; j < nh; j++) {
-        int32_t s = 16384 - (int32_t)act[j] * dd;
-        pos[j] = t0 - act[j] * (uint32_t)da;
+        uint32_t n1 = act[j], dist = n1 * (uint32_t)da + n1 * (n1 - 1u) * ((uint32_t)(da >> 8) * (uint32_t)dl.bq);
+        int32_t s = 16384 - ((int32_t)(n1 * 256u + n1 * (n1 - 1u) * (uint32_t)dl.bq) * dd >> 8);   /* (the head's speed matches the stretched gap) */
+        dist = dist > 2130000000u ? 2130000000u : dist;   /* (not past the line's end: 32 512 cells) */
+        pos[j] = t0 - dist;
         stp[j] = (uint32_t)(s > 49152 ? 49152 : s < -49152 ? -49152 : s);   /* (a fast glide: backwards, at 3 x at most) */
     }
     mixq = mix * 327;
