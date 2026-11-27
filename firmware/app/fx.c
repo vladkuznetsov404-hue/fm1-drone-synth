@@ -55,14 +55,15 @@ static struct {
     int16_t last[FV_N];          /* the values fx_update last used (-1: never) */
     int32_t gain;                /* the fuzz's input gain, Q8 */
     int32_t tone, level;         /* Q14 (0..1), Q15 at the output */
-    int32_t dark_a;              /* the DARK one-poles' coefficient, Q14 */
+    int32_t dark_a;              /* the DARK one-poles' coefficient, Q14 (with BREATH's LFO: breath.c, per block) */
+    int32_t lmod;                /* BREATH's level factor, Q15 (breath.c, per block) */
     int32_t samp;                /* the sub's level for the voices, Q15 */
     uint8_t cab;                 /* 0 off, 1 4x12, 2 4x12 dark */
     uint8_t bypass;              /* the voices alone, no chain (the host tests of the engines) */
     uint32_t idle;               /* samples the voices have been silent */
     int32_t dc1x, dc1y, dc2x, dc2y, tlp, lp1, lp2;
     int32_t bq[3][4];            /* the cabinet's states: x1, x2, y1, y2 */
-} fx = {.last = {-1, -1, -1, -1, -1, -1, -1}};
+} fx = {.last = {-1, -1, -1, -1, -1, -1, -1}, .lmod = 32768};
 
 static int32_t fx_pole(int32_t y)   /* y * DC_R / 32768, rounded toward zero: the DC blocks decay all the way to 0 */
 {
@@ -106,8 +107,8 @@ static __attribute__((noinline)) void fx_clear(void)   /* every state to zero: e
     memset(fx.bq, 0, sizeof fx.bq);
 }
 
-static int32_t fx_biquad(int32_t x, const int32_t *c, int32_t *s)   /* DF1, Q28 coefficients, a 64-bit sum */
-{
+static inline __attribute__((always_inline)) int32_t fx_biquad(int32_t x, const int32_t *c, int32_t *s)
+{                                /* DF1, Q28 coefficients, a 64-bit sum (inlined: it runs 3 times a sample) */
     int64_t acc = (int64_t)c[0] * x + (int64_t)c[1] * s[0] + (int64_t)c[2] * s[1] - (int64_t)c[3] * s[2] -
                   (int64_t)c[4] * s[3];
     int32_t y = (int32_t)(acc >> 28);
@@ -122,6 +123,7 @@ static int32_t fx_biquad(int32_t x, const int32_t *c, int32_t *s)   /* DF1, Q28 
 static void fx_process(int32_t *out, uint32_t n, int active)
 {
     uint32_t i, k;
+    int32_t lvl;
     if (fx.bypass)
         return;
     if (!active) {
@@ -139,6 +141,7 @@ static void fx_process(int32_t *out, uint32_t n, int active)
         }
     } else
         fx.idle = 0;
+    lvl = fx.level * fx.lmod >> 15;              /* (11 000 * 38 928 < 2^31) */
     for (i = 0; i < n; i++) {
         int32_t x = out[2u * i], y, v;
         x = x > 30000 ? 30000 : x < -30000 ? -30000 : x;
@@ -159,7 +162,7 @@ static void fx_process(int32_t *out, uint32_t n, int active)
         fx.dc2y = y;
         fx.tlp += (y - fx.tlp) * TONE_A >> 14;   /* tone: the dark part and the rest mixed in by FUZZ TONE */
         y = fx.tlp + ((y - fx.tlp) * fx.tone >> 14);
-        y = y * fx.level >> 14;                  /* Q14 -> the output's Q15 level */
+        y = y * lvl >> 14;                       /* Q14 -> the output's Q15 level (BREATH's swell in it) */
         if (fx.cab)
             for (k = 0; k < 3u; k++)
                 y = fx_biquad(y, CAB[fx.cab - 1u][k], fx.bq[k]);

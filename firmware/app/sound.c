@@ -3,8 +3,8 @@
 /* The sound (audio ISR): the latch and four voices of the SAW drone engine (milestone 2 of docs/SPEC.md): per note
  * 1..3 band-limited saws detuned by BEATS (SPREAD CURVE shapes the knob) and a sine sub one or two octaves down, with
  * the swell and release of the sound's ENV values and the master volume, into the chain of fx.c (the fuzz, the
- * cabinet, DARK). BREATH, the FM engine and the cassette come in the later milestones; the latch and its rules are
- * final here.
+ * cabinet, DARK), with BREATH's slow pitch drift (breath.c). The FM engine and the cassette come in the later
+ * milestones; the latch and its rules are final here.
  *
  * The latch: a key (or a MIDI note-on) whose note is not sounding starts it; the same note again releases it (the
  * release time); a note-off does nothing. At most NV notes: a fifth takes the oldest voice, which keeps its phase
@@ -235,23 +235,27 @@ static void snd_render(int32_t *out, uint32_t n)
     if (tune_sig() != snd.tune_sig)              /* (also the first block: the signature starts at 0, never valid) */
         snd_retune();
     fx_check();
+    breath_block();                              /* the LFOs: br.pm, fx.dark_a, fx.lmod (breath.c) */
     for (j = 0; j < NV; j++) {
         voice_t *v = &snd.v[j];
-        uint32_t nl = snd.layers, sph = v->sph, sinc = v->sinc, l;
+        uint32_t nl = snd.layers, sph = v->sph, sinc = v->sinc, l, linc[NL];
         int32_t g = v->gain, st = v->step, top = v->state == V_ON ? G_FULL : 0, lamp = snd.lamp, samp = fx.samp;
         if (v->state == V_OFF)
             continue;
+        for (l = 0; l < nl; l++)                 /* BREATH's pitch: inc * pm >> 24, in 32 bits (inc >> 12: ~0.02 %) */
+            linc[l] = v->inc[l] + (uint32_t)((int32_t)(v->inc[l] >> 12) * (br.pm >> 4) >> 8);
+        sinc += (uint32_t)((int32_t)(sinc >> 12) * (br.pm >> 4) >> 8);
         for (i = 0; i < n; i++) {
             int32_t acc = 0, u, y;
             g += st;
             g = st > 0 ? (g > top ? top : g) : (g < 0 ? 0 : g);
             for (l = 0; l < nl; l++) {
-                uint32_t p = v->ph[l] += v->inc[l];
+                uint32_t p = v->ph[l] += linc[l];
                 int32_t s = (int32_t)(p >> 16) - 32768, x;
-                if (p < v->inc[l]) {             /* just after the wrap: t / dt in Q15 */
+                if (p < linc[l]) {               /* just after the wrap: t / dt in Q15 */
                     x = (int32_t)(((p >> 8) * v->rinv[l]) >> 16);
                     s -= 2 * x - (x * x >> 15) - 32768;
-                } else if (p > ~v->inc[l]) {     /* just before it: (1 - t) / dt */
+                } else if (p > ~linc[l]) {       /* just before it: (1 - t) / dt */
                     x = (int32_t)((((0u - p) >> 8) * v->rinv[l]) >> 16);
                     s -= (x * x >> 15) - 2 * x + 32768;
                 }

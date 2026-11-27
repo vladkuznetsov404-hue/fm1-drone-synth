@@ -5,6 +5,7 @@
  * includes the parts in dependency order:
  *   data.c   the values of a sound and of the settings, their text, the two records in flash
  *   fx.c     the chain after the voices (audio ISR): the fuzz, the cabinet, DARK, MASSA's drive
+ *   breath.c BREATH: three slow LFOs on the pitch, the cutoff and the level (audio ISR, per block)
  *   sound.c  the audio ISR: the latch, the voices, MIDI in
  *   tape.c   the cassette's transport (main loop; its audio comes in a milestone)
  *   ui.c     the pages, the SAVE dialog, the controls, the LEDs */
@@ -19,6 +20,7 @@
 
 #include "data.c"
 #include "fx.c"
+#include "breath.c"
 #include "sound.c"
 #include "tape.c"
 #include "ui.c"

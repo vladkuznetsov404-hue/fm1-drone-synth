@@ -19,7 +19,7 @@ static void check(const char *what, int ok)
     failed += !ok;
 }
 
-#define SECS 1u
+#define SECS 4u
 static int32_t buf[2u * FS * SECS];
 #define BLOCKS(n) ((n) / CTL * CTL)
 
@@ -80,6 +80,9 @@ static void reset_state(void)                    /* the app's RAM as at power-on
     memset(&snd, 0, sizeof snd);
     memset(&fx, 0, sizeof fx);
     memset(fx.last, 0xFF, sizeof fx.last);       /* (-1: never updated, as at power-on) */
+    fx.lmod = 32768;
+    memset(&br, 0, sizeof br);
+    memset(br.last, 0xFF, sizeof br.last);
     memset(&tape, 0, sizeof tape);
     memset(&cur, 0, sizeof cur);
     memset(&bank, 0, sizeof bank);
@@ -457,6 +460,7 @@ static void sound(void)
     host_render(buf, 1024);
     check("silence with nothing latched", peak(buf, 1024) == 0);
     fx.bypass = 1;                               /* the voices alone: the chain has its own checks (fx_chain) */
+    cur.p[P_BREATH] = 0;                         /* still, no LFOs: their own checks (breath) */
     set.g[G_OCT] = 0;                            /* key 0 = F3, 174.61 Hz */
     cur.p[P_LAYERS] = 1;                         /* the latch, ramps and MIDI checks on one plain saw, no sub */
     cur.p[P_SUB] = 0;
@@ -556,6 +560,7 @@ static void engine(void)
     host_nor_erase();
     power_cycle();
     fx.bypass = 1;
+    cur.p[P_BREATH] = 0;
     set.g[G_OCT] = 0;
     cur.p[P_ATTACK] = 0;
     cur.p[P_SUB] = 0;
@@ -668,6 +673,7 @@ static void fx_chain(void)
     host_nor_erase();
     power_cycle();
     set.g[G_OCT] = -1;                           /* key 0 = F2 */
+    cur.p[P_BREATH] = 0;
     cur.p[P_ATTACK] = 0;
     cur.p[P_RELEASE] = 0;
     cur.p[P_DRIVE] = 0;
@@ -746,6 +752,82 @@ static void fx_chain(void)
     host_render(buf, 64);
 }
 
+/* BREATH (milestone 4): still at 0; at 100 the level, the pitch and the cutoff move, each by its TO value. Measured
+ * in quarter seconds over 4 s at RATE 100 (1.2 Hz with BREATH's nudge, the others x 1.375 and x 0.75). */
+static void spread_q(const int32_t *b, uint32_t frames, double (*f)(const int32_t *, uint32_t), double *lo,
+                     double *hi)
+{
+    uint32_t q = BLOCKS(FS / 4), i;
+    *lo = 1e30;
+    *hi = 0;
+    for (i = 0; i + q <= frames; i += q) {
+        double v = f(b + 2u * i, q);
+        *lo = v < *lo ? v : *lo;
+        *hi = v > *hi ? v : *hi;
+    }
+}
+
+static double pitch_q(const int32_t *b, uint32_t frames) { return pitch(b, frames); }
+
+static double h10_q(const int32_t *b, uint32_t frames) { return level_at(b, frames, 1746.14); }   /* F3's 10th */
+
+static void breath(void)
+{
+    const uint32_t S4 = BLOCKS(4u * FS);
+    double lo, hi;
+    host_nor_erase();
+    power_cycle();
+    set.g[G_OCT] = 0;
+    cur.p[P_ATTACK] = 0;
+    cur.p[P_LAYERS] = 1;
+    cur.p[P_SUB] = 0;
+    cur.p[P_BREATH] = 0;
+    cur.p[P_RATE] = 100;
+    cur.p[P_TOPITCH] = 0;
+    cur.p[P_TOCUT] = 0;
+    cur.p[P_TOLEVEL] = 100;
+    tap_key(0);
+    host_render(buf, BLOCKS(FS));
+    host_render(buf, S4);
+    spread_q(buf, S4, rms, &lo, &hi);
+    check("BREATH 0: the level still (quarter seconds within 2 %)", hi / lo < 1.02);
+    cur.p[P_BREATH] = 100;
+    host_render(buf, S4);
+    spread_q(buf, S4, rms, &lo, &hi);
+    check("BREATH 100, TO LEVEL 100: the level breathes (> 1.5 dB between quarter seconds)", hi / lo > 1.19);
+    cur.p[P_TOLEVEL] = 0;
+    host_render(buf, S4);
+    spread_q(buf, S4, rms, &lo, &hi);
+    check("TO LEVEL 0: the level still again", hi / lo < 1.05);
+
+    fx.bypass = 1;                               /* the pitch on the voices alone: zero crossings */
+    cur.p[P_TOPITCH] = 100;
+    host_render(buf, S4);
+    spread_q(buf, S4, pitch_q, &lo, &hi);
+    check("TO PITCH 100: the pitch drifts (> 5 cents between quarter seconds, < 17)", hi / lo > 1.0029 &&
+          hi / lo < 1.0099);
+    cur.p[P_TOPITCH] = 0;
+    host_render(buf, S4);
+    spread_q(buf, S4, pitch_q, &lo, &hi);
+    check("TO PITCH 0: the pitch still (< 0.5 cent)", hi / lo < 1.0003);
+    fx.bypass = 0;
+
+    cur.p[P_DARK] = 50;
+    cur.p[P_TOCUT] = 100;
+    host_render(buf, S4);
+    {                                            /* the cutoff (~1.3 kHz at DARK 50) seen on F3's 10th harmonic */
+        double l2, h2;
+        spread_q(buf, S4, h10_q, &lo, &hi);
+        cur.p[P_TOCUT] = 0;
+        host_render(buf, S4);
+        spread_q(buf, S4, h10_q, &l2, &h2);
+        check("TO CUTOFF 100: the 10th harmonic swells and fades (> 12 dB), TO CUTOFF 0: much less (< 3.5 dB)",
+              hi / lo > 4.0 && h2 / l2 < 1.5);  /* (still: ~1.25, the fuzz's aliases beating with it) */
+    }
+    app_audio_stop();
+    host_render(buf, 64);
+}
+
 int main(void)
 {
     if (system("mkdir -p build/shots"))
@@ -756,6 +838,7 @@ int main(void)
     sound();
     engine();
     fx_chain();
+    breath();
     puts(failed ? "APP TEST FAILED" : "app test passed");
     return failed ? 1 : 0;
 }

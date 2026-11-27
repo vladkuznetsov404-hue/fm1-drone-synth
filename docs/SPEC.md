@@ -91,7 +91,10 @@ Each page draws only what changed (the platform's lazy drawing).
   low-pass at 4.2 kHz and +5 dB at 110 Hz; 4×12 dark: 2.3 kHz and +6 dB at 100 Hz; three biquads) → **DARK** (two
   one-poles, 12 dB/oct, 12 kHz at 0 down to 150 Hz at 100, even steps in pitch) → the cassette. MASSA also lifts the
   sub by up to 60 %. After ~0.19 s of silent voices the chain is cleared and outputs exact zero.
-- **Breath**: three slow LFOs at unrelated rates (cutoff, pitch ±few cents, level ±1.5 dB), depth from BREATH.
+- **Breath** (milestone 4, built: `breath.c`): three slow LFOs (parabolic sines) at RATE, ×1.375 and ×0.75 (they
+  line up only every ~11 cycles), on the pitch (±8 cents), the DARK cutoff (±25 steps) and the level (±1.5 dB), each
+  weighed by its TO value; BREATH is the depth of all three and nudges the rate up to +20 %. Worked out once per
+  32-sample block.
 - **Swell / release**: per-note amplitude ramps (attack 0..10 s, release 0..20 s, at least ~6 ms); no clicks on
   start, steal or stop. A stolen voice keeps its phase and level and changes pitch, then swells from there. A key or
   note-on whose note is still releasing swells that voice back up.
