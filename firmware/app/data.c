@@ -28,6 +28,7 @@ enum { G_CH, G_TRS, G_VOL, G_OCT, G_SLOT, G_SPEED, G_DIR, G_DECAY, G_WEAR, G_BRA
        G_GMIX, G_GSIZE, G_GDENS, G_GPITCH, G_GSCAT, G_GREV, G_GFB,   /* the grains */
        G_SCALE, G_ROOT, G_CHORD, G_LOW,                    /* SCL: the scale of the keys, the chords */
        G_MODE,                                             /* HARSH or SHOEGAZE */
+       G_DROP,                                             /* the cassette's dropouts */
        NG };
 #define G_ROOM 48
 
@@ -91,6 +92,7 @@ static const par_t GP[NG] = {
     [G_SCALE] = {"SCALE", 0, 6, 0, F_SCALE},       [G_ROOT] = {"ROOT", 0, 11, 0, F_ROOT},
     [G_CHORD] = {"CHORD", 0, 7, 0, F_CHORD},       [G_LOW] = {"LOW ROOT", 0, 2, 0, F_LOW},
     [G_MODE] = {"MODE", 0, 1, 0, F_MODE},
+    [G_DROP] = {"DROPOUT", 0, 100, 0, F_NUM},
 };
 
 typedef struct {

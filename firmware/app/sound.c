@@ -13,6 +13,14 @@
  * and its level and only changes pitch (no click; the swell then runs from where the level is). SCL releases every
  * note (silence_req), app_audio_stop silences at once (stop_req).
  *
+ * SCL (the scale page): the keys are not only chromatic. A scale (G_SCALE) and its root (G_ROOT) turn key k into the
+ * k-th degree going up from the root (seven keys an octave for the seven-note scales: MINOR, PHRYGIAN, LOCRIAN,
+ * HARM MINOR; five for PENT MINOR, six for WHOLE); CHROMATIC keeps the old layout (key 0 = F3 whatever the root).
+ * A key press is a chord (G_CHORD: POWER, SUS4, DOOM ...) over its note, with the root doubled an octave or two down
+ * (G_LOW): at most NV notes, the root first. The latch toggles the whole chord: pressed while its root sounds, every
+ * note of the chord is released; otherwise every note that is not sounding already starts. MIDI notes stay single.
+ * While SEQ is held (pad_mode) the keys are the cassette's pads (tape.c) and make no notes.
+ *
  * Gains are Q24 (1 << 24 = full); ramps are a per-sample step computed once per note event (the one divide, in a
  * noinline function). The tuning of the layers (their increments and the reciprocals the saws' polyBLEP needs: the
  * divides) is worked out in snd_tune, a noinline function, only when a note starts or a tuning value changes (a
@@ -71,7 +79,8 @@ static struct {
     voice_t v[NV];
     uint32_t last_keys, clock;
     volatile uint8_t stop_req;   /* main loop -> ISR: everything silent now, every note forgotten */
-    volatile uint8_t silence_req;   /* main loop -> ISR (SCL): every note released */
+    volatile uint8_t silence_req;   /* main loop -> ISR (SCL held): every note released */
+    volatile uint8_t pad_mode;   /* main loop -> ISR (SEQ held): the keys are pads, not notes */
     volatile uint8_t held[NV];   /* ISR -> screen and LEDs: the latched notes per voice (0 none; releasing: 0) */
     volatile uint8_t last_midi;  /* ISR -> screen: the last MIDI note-on taken (0: none yet) */
     uint32_t tune_sig;           /* the tuning values snd_tune last used (BEATS, CURVE, LAYERS, SUB OCTAVE) */
@@ -193,19 +202,113 @@ static __attribute__((noinline)) void snd_retune(void)   /* a tuning value chang
         snd_tune(&snd.v[i]);
 }
 
+/* The scales: the degrees in semitones above the root, and how many there are; the chords: the intervals above the
+ * pressed key's note. SCALE 0 is the chromatic layout. */
+static const uint8_t SC_LEN[7] = {12, 7, 7, 7, 7, 5, 6};
+static const uint8_t SC_DEG[7][12] = {
+    {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}, {0, 2, 3, 5, 7, 8, 10}, {0, 1, 3, 5, 7, 8, 10}, {0, 1, 3, 5, 6, 8, 10},
+    {0, 2, 3, 5, 7, 8, 11},                 {0, 3, 5, 7, 10},       {0, 2, 4, 6, 8, 10}};
+static const uint8_t CH_LEN[8] = {1, 2, 3, 3, 3, 2, 4, 3};
+static const uint8_t CH_IV[8][4] = {{0}, {0, 7}, {0, 7, 12}, {0, 5, 7}, {0, 3, 7}, {0, 6}, {0, 7, 12, 19}, {0, 12, 24}};
+
+static int32_t scale_start(void)                 /* the root's note at or just above the keyboard's first note */
+{
+    int32_t base = (int32_t)NOTE_KEY0 + 12 * set.g[G_OCT];
+    return base + (set.g[G_ROOT] - base % 12 + 12) % 12;
+}
+
+static int32_t key_note(uint32_t k)              /* key 0..26 -> the MIDI note it plays */
+{
+    uint32_t sc = (uint32_t)set.g[G_SCALE], len;
+    if (sc == 0u || sc > 6u)
+        return (int32_t)NOTE_KEY0 + 12 * set.g[G_OCT] + (int32_t)k;
+    len = SC_LEN[sc];
+    return scale_start() + 12 * (int32_t)(k / len) + SC_DEG[sc][k % len];
+}
+
+static int32_t note_key(int32_t note)            /* the inverse: the key that plays this note, -1 if none (an off-scale MIDI note) */
+{
+    uint32_t sc = (uint32_t)set.g[G_SCALE], len, i;
+    int32_t n, k = -1;
+    if (sc == 0u || sc > 6u)
+        k = note - ((int32_t)NOTE_KEY0 + 12 * set.g[G_OCT]);
+    else {
+        len = SC_LEN[sc];
+        n = note - scale_start();
+        if (n >= 0)
+            for (i = 0; i < len; i++)
+                if (SC_DEG[sc][i] == n % 12)
+                    k = (n / 12) * (int32_t)len + (int32_t)i;
+    }
+    return k >= 0 && k < 27 ? k : -1;
+}
+
+/* the notes of a key press: the root, its low doubling, the chord's others; at most NV */
+static uint32_t chord_notes(int32_t root, int32_t *out)
+{
+    uint32_t n = 0, i, ch = (uint32_t)set.g[G_CHORD];
+    ch = ch > 7u ? 0u : ch;
+    out[n++] = root;
+    if (set.g[G_LOW] == 1 && root - 12 >= 0)     /* LOW: the root one or two octaves down (one of them) */
+        out[n++] = root - 12;
+    if (set.g[G_LOW] == 2 && root - 24 >= 0)
+        out[n++] = root - 24;
+    for (i = 1; i < CH_LEN[ch] && n < NV; i++)
+        out[n++] = root + CH_IV[ch][i];
+    return n;
+}
+
+static __attribute__((noinline)) void snd_stop_voice(uint32_t i)   /* release one note */
+{
+    snd.v[i].state = V_REL;
+    snd.v[i].step = -ramp_step(cur.p[P_RELEASE]);
+    snd.held[i] = 0;
+}
+
+static __attribute__((noinline)) void snd_start(uint32_t note, uint32_t src);
+
 static __attribute__((noinline)) void snd_toggle(uint32_t note, uint32_t src)   /* one latch press */
 {
-    uint32_t i, pick = NV, oldest = 0xFFFFFFFFu;
-    voice_t *v;
+    uint32_t i;
     if (note > 127u)
         return;
     for (i = 0; i < NV; i++)                     /* sounding: release it */
         if (snd.v[i].state == V_ON && snd.v[i].note == note) {
-            snd.v[i].state = V_REL;
-            snd.v[i].step = -ramp_step(cur.p[P_RELEASE]);
-            snd.held[i] = 0;
+            snd_stop_voice(i);
             return;
         }
+    snd_start(note, src);
+}
+
+static __attribute__((noinline)) void snd_press(int32_t root, uint32_t src)   /* a key: its chord, latched as a whole */
+{
+    int32_t notes[NV];
+    uint32_t n = chord_notes(root, notes), i, j, on = 0;
+    if (root < 0 || root > 127)
+        return;
+    for (j = 0; j < NV; j++)
+        on |= snd.v[j].state == V_ON && snd.v[j].note == root;
+    for (i = 0; i < n; i++) {
+        if (notes[i] < 0 || notes[i] > 127)
+            continue;
+        if (on) {                                /* the root sounds: the whole chord goes */
+            for (j = 0; j < NV; j++)
+                if (snd.v[j].state == V_ON && snd.v[j].note == (uint8_t)notes[i])
+                    snd_stop_voice(j);
+        } else {                                 /* else what is not sounding starts */
+            for (j = 0; j < NV; j++)
+                if (snd.v[j].state == V_ON && snd.v[j].note == (uint8_t)notes[i])
+                    break;
+            if (j == NV)
+                snd_start((uint32_t)notes[i], src);
+        }
+    }
+}
+
+static __attribute__((noinline)) void snd_start(uint32_t note, uint32_t src)   /* a note starts: a free voice, or the oldest */
+{
+    uint32_t i, pick = NV, oldest = 0xFFFFFFFFu;
+    voice_t *v;
     for (i = 0; i < NV && pick == NV; i++)       /* a free voice, */
         if (snd.v[i].state == V_OFF)
             pick = i;
@@ -248,12 +351,10 @@ static __attribute__((noinline)) void snd_toggle(uint32_t note, uint32_t src)   
 
 static __attribute__((noinline)) void snd_keys(uint32_t down)   /* keys that went down since the last block */
 {
-    int32_t base = (int32_t)NOTE_KEY0 + 12 * set.g[G_OCT];
     while (down) {
         uint32_t k = (uint32_t)__builtin_ctz(down);
         down &= down - 1u;
-        if (base + (int32_t)k >= 0)
-            snd_toggle((uint32_t)(base + (int32_t)k), SRC_KEY);
+        snd_press(key_note(k), SRC_KEY);
     }
 }
 
@@ -298,13 +399,13 @@ static __attribute__((noinline)) void snd_requests(void)
 
 static void snd_render(int32_t *out, uint32_t n)
 {
-    uint32_t keys = fm1_in.notes, pkt, src, i, j;
+    uint32_t keys = snd.pad_mode ? 0u : fm1_in.notes, pkt, src, i, j;
     int32_t vol = set.g[G_VOL] * 82 >> 5;        /* 0..100 -> 0..256 (Q8) */
     for (i = 0; i < n; i++)
         out[2u * i] = 0;
     if (keys & ~snd.last_keys)
         snd_keys(keys & ~snd.last_keys);
-    snd.last_keys = keys;
+    snd.last_keys = fm1_in.notes;                /* (the real keys: one pressed as a pad makes no note when SEQ is let go) */
     while (midi_in_take(&pkt, &src))
         snd_midi(pkt, src);
     if (snd.stop_req | snd.silence_req)          /* after the queue: what came before a stop is forgotten too */
@@ -385,6 +486,7 @@ static void snd_render(int32_t *out, uint32_t n)
     for (j = 0; j < NV && snd.v[j].state == V_OFF; j++)
         ;
     fx_process(out, n, j < NV);                  /* the fuzz, the cabinet, DARK (fx.c) */
+    shoe_process(out, n);                        /* SHOEGAZE: the chorus and the reverb (shoe.c) */
     tape_process(out, n);                        /* the cassette: records the chain, plays back over it (tape.c) */
     dly_process(out, n);                         /* the tape echo over all of it (delay.c) */
     for (i = 0; i < n; i++) {

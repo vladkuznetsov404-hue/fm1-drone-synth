@@ -7,6 +7,18 @@
  * tape slows to a stop, its pitch falling), WEAR (wow ~0.5 Hz, flutter ~8 Hz, hiss, and highs lost on every pass).
  * The tape lives in RAM only.
  *
+ * Pitch apart from speed (PITCH, LOCK, the pads): the speed (SPEED, the pads HALF / DOUBLE / STOP, a nudge) moves the
+ * head through the tape; the pitch is how fast the tape is read. They are the same thing on a cassette (a plain read,
+ * as before) and are pulled apart by two overlapping grains (a triangle window of 1 024 samples, 50 % overlap) that
+ * read the tape at the pitch's rate from wherever the head was when they started: the head's own position only moves
+ * at the speed. With the pitch equal to the speed the two grains read the head's own path and the sum of the windows
+ * is one: the sound is the plain read's, so the grains are only used while they are needed (and for three respawns
+ * after, so that they have come back to the head before the plain read takes over: no splice).
+ *
+ * Pads (SEQ held, the keys): a bit per key in tape.pads, held = the effect on. The artifacts of a cassette machine
+ * handled badly: DROPOUT (the level dips for 6 .. 40 blocks at random, more with WEAR), CHEW (a held pad: the speed
+ * jitters, dropouts come often, the highs go), and the highs lost at low speed on any tape.
+ *
  * The audio ISR owns the tape: its clock is the sample count, so the loop is sample-exact at any frame rate. The
  * main loop only posts the buttons (tape_rec, tape_play, tape_erase: a small ring, taken at the start of a block)
  * and shows what the ISR publishes (tape.st, and the length and position, turned into ms by tape_frame).
@@ -31,7 +43,17 @@
 
 enum { TP_EMPTY, TP_REC, TP_PLAY, TP_DUB, TP_STOP };
 static const char *const TP_NAME[5] = {"EMPTY", "REC", "PLAY", "DUB", "STOP"};
-enum { TE_REC = 1, TE_PLAY, TE_ERASE };
+enum { TE_REC = 1, TE_PLAY, TE_ERASE, TE_NUDGE_UP, TE_NUDGE_DOWN };
+/* the pads: the key 0..14 while SEQ is held */
+enum { PD_REV, PD_HALF, PD_DOUBLE, PD_STOP, PD_ST8, PD_ST16, PD_ST32, PD_FREEZE, PD_CHEW, PD_UP, PD_DOWN, PD_FIFTH,
+       PD_SKIP, PD_RESTART, PD_ECHO, NPAD };
+static const char *const PAD_NAME[NPAD] = {"REV", "HALF", "DOUBLE", "STOP", "STUT 8", "STUT 16", "STUT 32", "FREEZE",
+                                           "CHEW", "+12", "-12", "+7", "SKIP", "RESTART", "ECHO HOLD"};
+/* 2^(k / 12) in Q16, k = -24 .. +24 */
+static const int32_t TAPE_PR[49] = {16384, 17358, 18390, 19484, 20643, 21870, 23170, 24548, 26008, 27554, 29193, 30929,
+    32768, 34716, 36781, 38968, 41285, 43740, 46341, 49097, 52016, 55109, 58386, 61858, 65536, 69433, 73562, 77936,
+    82570, 87480, 92682, 98193, 104032, 110218, 116772, 123715, 131072, 138866, 147123, 155872, 165140, 174960, 185364,
+    196386, 208064, 220436, 233544, 247431, 262144};
 
 static int8_t tape_cells[TAPE_N] __attribute__((section(".pool")));
 
@@ -52,6 +74,13 @@ static struct {
     int32_t acc, cnt;            /* the live samples on the cell under the head */
     int32_t loss;                /* WEAR's high loss on writes: a one-pole across cells (Q7 cells x 128) */
     uint32_t wow, flut, rnd;     /* WEAR: the LFOs' phases, the hiss's xorshift */
+    volatile uint32_t pads;      /* main loop -> ISR: the pads held (a bit per PD_) */
+    volatile int32_t spd_pub;    /* ISR -> screen: the speed now (Q16), the reels' */
+    uint32_t pads_prev, sip, slen, srun;   /* the pads at the last block; the stutter: where, how long, how far */
+    int32_t nudge, cj, def, lp;  /* a nudge of the speed (decays); the chew's jitter; the dropout's dip (Q15, 0 = none); the highs' one-pole */
+    uint32_t dlen, gcool;        /* blocks left in a dropout; the grains' respawns since they were not needed */
+    uint8_t gon;                 /* the grains read (pitch apart from speed) */
+    struct { uint32_t i, f, ph; } g[2];   /* the two grains: the cell, the way to the next (Q16), the window's phase (0..65 535) */
 } tape = {.rnd = 0x1234567u};
 
 /* ---- the main loop's side ---- */
@@ -68,6 +97,8 @@ static void tape_post(uint8_t e)
 static void tape_rec(void) { tape_post(TE_REC); }
 static void tape_play(void) { tape_post(TE_PLAY); }
 static void tape_erase(void) { tape_post(TE_ERASE); }
+static void tape_nudge(int up) { tape_post(up ? TE_NUDGE_UP : TE_NUDGE_DOWN); }
+static void tape_pads(uint32_t held) { tape.pads = held; }
 
 static void tape_frame(void)    /* every frame: the ISR's cells -> ms for the screen */
 {
@@ -148,9 +179,36 @@ static __attribute__((noinline)) void tape_event(uint8_t e)
         tape.n = tape.ip = tape.frac = 0;
         tape.braking = tape.spinning = 0;
         tape.spd = 0;
+        tape.gon = 0;
+        tape.def = 0;
+        tape.dlen = 0;
+        tape.nudge = 0;
         break;
+    case TE_NUDGE_UP: tape.nudge = tape.nudge > 24000 ? 32768 : tape.nudge + 8192; break;
+    case TE_NUDGE_DOWN: tape.nudge = tape.nudge < -24000 ? -32768 : tape.nudge - 8192; break;
     }
     tape.n_pub = tape.n;
+}
+
+static uint32_t tape_nx(uint32_t i, int rev, uint32_t n)   /* the cell after i in the playing direction */
+{
+    return rev ? (i ? i - 1u : n - 1u) : (i + 1u < n ? i + 1u : 0u);
+}
+
+static __attribute__((noinline)) void tape_pad_edge(uint32_t rise)   /* a pad just went down: SKIP, RESTART, a stutter's start */
+{
+    if (rise & (1u << PD_SKIP))
+        tape.ip = (tape.ip + tape.n / 8u) % tape.n;
+    if (rise & (1u << PD_RESTART)) {
+        tape.ip = 0;
+        tape.frac = 0;
+    }
+    if (rise & (7u << PD_ST8)) {
+        tape.sip = tape.ip;
+        tape.srun = 0;
+        tape.slen = tape.n >> ((rise & (1u << PD_ST8)) ? 3 : (rise & (1u << PD_ST16)) ? 4 : 5);
+        tape.slen = tape.slen < 256u ? 256u : tape.slen;
+    }
 }
 
 static int32_t tape_sat(int32_t c)  /* a cell's value, saturating softly above 96 */
@@ -180,8 +238,11 @@ static void tape_write(uint32_t cell, int32_t keep_q8, int32_t loss_a)   /* the 
 static void tape_process(int32_t *out, uint32_t n)
 {
     uint32_t i;
-    int32_t wear = set.g[G_WEAR], keep, loss_a, step, hiss;
-    int dub, rev;
+    int32_t wear = set.g[G_WEAR], keep, loss_a, step, gstep, hiss, alp;
+    uint32_t pm = tape.pads, rise = pm & ~tape.pads_prev;
+    int32_t chew = (pm >> PD_CHEW & 1u) ? 100 : 0;
+    int dub, rev, stut, frz, lockeff, need_g;
+    tape.pads_prev = pm;
     while (tape.ev_r != tape.ev_w) {
         tape_event(tape.ev[tape.ev_r & 3u]);
         tape.ev_r = (uint8_t)(tape.ev_r + 1u);
@@ -219,26 +280,118 @@ static void tape_process(int32_t *out, uint32_t n)
             tape.spd = b;
             tape.spinning = 0;
         }
-    } else
-        tape.spd = tape_base();
+    } else {                                     /* playing: SPEED, the pads, the nudge, slewed (~10 ms) */
+        int32_t tgt = tape_base(), df;
+        if (pm & (1u << PD_STOP))
+            tgt = 0;
+        else {
+            tgt = pm & (1u << PD_HALF) ? tgt >> 1 : tgt;
+            tgt = pm & (1u << PD_DOUBLE) ? tgt << 1 : tgt;
+        }
+        tgt += tape.nudge;
+        tape.nudge -= tape.nudge >> 6;           /* (gone in ~0.15 s) */
+        tape.nudge = tape.nudge > -64 && tape.nudge < 64 ? 0 : tape.nudge;
+        tgt = tgt < 0 ? 0 : tgt;
+        df = tgt - tape.spd;
+        tape.spd = df > -16 && df < 16 ? tgt : tape.spd + (df >> 4);
+    }
+    tape.spd_pub = tape.spd;
     if (!tape.spd) {                             /* stopped: no tape */
         tape.ip_pub = tape.ip;
         return;
     }
+    {                                            /* the artifacts: dropouts and the chew (per block) */
+        int32_t thr, tgt = 0;
+        tape.rnd ^= tape.rnd << 13;
+        tape.rnd ^= tape.rnd >> 17;
+        tape.rnd ^= tape.rnd << 5;
+        thr = (set.g[G_DROP] + wear / 2) * 3 + chew * 8;       /* of 65 536 a block: DROPOUT 100 ~ 5 a second */
+        if (!tape.dlen && (int32_t)(tape.rnd & 0xFFFFu) < thr)
+            tape.dlen = 6u + ((tape.rnd >> 16) & 31u) + (uint32_t)chew / 4u;
+        if (tape.dlen) {
+            tape.dlen--;
+            tgt = 14000 + (int32_t)((tape.rnd >> 20) & 0x1FFFu);   /* a dip to ~35 .. 60 % */
+        }
+        tape.def += (tgt - tape.def) >> 1;
+        tape.def = tape.def < 40 && !tgt ? 0 : tape.def;
+        tape.cj += ((((int32_t)(tape.rnd >> 4 & 0xFFFFu) - 32768) * chew / 100) - tape.cj) >> 4;
+    }
     tape.wow += WOW_INC;
     tape.flut += FLUT_INC;
     {                                            /* WEAR 100: wow +-0.61 % (200 / 32 768), flutter +-0.15 % */
-        int32_t m = (br_sine(tape.wow) * (wear * 2) >> 15) + (br_sine(tape.flut) * wear >> 16);
+        int32_t m = (br_sine(tape.wow) * (wear * 2) >> 15) + (br_sine(tape.flut) * wear >> 16) + (tape.cj >> 6);
+        int32_t sem = set.g[G_PITCH] + ((pm >> PD_UP & 1u) ? 12 : 0) - ((pm >> PD_DOWN & 1u) ? 12 : 0) + ((pm >> PD_FIFTH & 1u) ? 7 : 0);
+        int32_t pr, q, base = tape_base();
+        sem = sem > 24 ? 24 : sem < -24 ? -24 : sem;
+        pr = TAPE_PR[sem + 24];
+        frz = (pm >> PD_FREEZE & 1u) != 0u;
+        lockeff = set.g[G_LOCK] && !(pm & (1u << PD_STOP));
+        q = lockeff ? pr : (pr >> 4) * ((frz ? base : tape.spd) >> 4) >> 8;   /* the pitch: x 65 536 */
         step = (tape.spd + (tape.spd * m >> 15)) >> 1;   /* cells per output sample, Q16 (the tape: half rate) */
+        gstep = (q + (q * m >> 15)) >> 1;
+        need_g = frz || q != tape.spd;
+        if (frz)
+            step = 0;
     }
+    if (need_g && !tape.gon) {                   /* the grains start at the head: one at full window, one at none */
+        tape.gon = 1;
+        tape.g[0].i = tape.g[1].i = tape.ip;
+        tape.g[0].f = tape.g[1].f = tape.frac;
+        tape.g[0].ph = 0;
+        tape.g[1].ph = 32768u;
+    }
+    if (need_g)
+        tape.gcool = 0;
+    else if (tape.gon && tape.gcool >= 3u)
+        tape.gon = 0;
+    if (rise)
+        tape_pad_edge(rise);
+    stut = (pm & (7u << PD_ST8)) != 0u;
     dub = tape.st == TP_DUB;
-    rev = set.g[G_DIR] != 0;
+    rev = (set.g[G_DIR] != 0) != ((pm & (1u << PD_REV)) != 0u);
     hiss = wear * 2;                             /* WEAR 100: ~-44 dB of hiss */
+    {                                            /* the highs lost at low speed (and by the chew): a one-pole, off at 1x */
+        int32_t sp = tape.spd < 65536 ? 65536 - tape.spd : 0;
+        alp = 32768 - (sp * 12000 >> 16) - chew * 60;
+        alp = alp < 8000 ? 8000 : alp;
+    }
     for (i = 0; i < n; i++) {
-        uint32_t nx = rev ? (tape.ip ? tape.ip - 1u : tape.n - 1u) : (tape.ip + 1u < tape.n ? tape.ip + 1u : 0u);
-        int32_t c0 = tape_cells[tape.ip], c1 = tape_cells[nx];
-        int32_t s = c0 * 256 + ((c1 - c0) * (int32_t)(tape.frac >> 8));
-        s = s * 13107 >> 15;                     /* cells x 256 -> Q15 (x 512 / 5 / 256) */
+        int32_t s;
+        if (tape.gon) {
+            int32_t acc = 0;
+            uint32_t k;
+            for (k = 0; k < 2u; k++) {
+                uint32_t gi = tape.g[k].i, gx = tape_nx(gi, rev, tape.n), ph = tape.g[k].ph;
+                int32_t c0 = tape_cells[gi], c1 = tape_cells[gx];
+                int32_t sk = c0 * 256 + ((c1 - c0) * (int32_t)(tape.g[k].f >> 8));
+                acc += (sk * (int32_t)((ph < 32768u ? ph : 65535u - ph) << 1)) >> 16;    /* (the triangle, 0..65 534) */
+                tape.g[k].f += (uint32_t)gstep;
+                while (tape.g[k].f >= 65536u) {
+                    tape.g[k].f -= 65536u;
+                    tape.g[k].i = tape_nx(tape.g[k].i, rev, tape.n);
+                }
+                ph += 64u;                                           /* 1 024 samples a window */
+                if (ph >= 65536u) {                                  /* the window ends: a new grain at the head */
+                    ph -= 65536u;
+                    tape.g[k].i = tape.ip;
+                    tape.g[k].f = tape.frac;
+                    tape.gcool++;
+                }
+                tape.g[k].ph = ph;
+            }
+            s = acc * 13107 >> 15;
+        } else {
+            uint32_t nx = tape_nx(tape.ip, rev, tape.n);
+            int32_t c0 = tape_cells[tape.ip], c1 = tape_cells[nx];
+            s = c0 * 256 + ((c1 - c0) * (int32_t)(tape.frac >> 8));
+            s = s * 13107 >> 15;                 /* cells x 256 -> Q15 (x 512 / 5 / 256) */
+        }
+        if (alp < 32768) {
+            tape.lp += (s - tape.lp) * alp >> 15;
+            s = tape.lp;
+        }
+        if (tape.def)
+            s -= s * tape.def >> 15;
         if (hiss) {
             tape.rnd ^= tape.rnd << 13;
             tape.rnd ^= tape.rnd >> 17;
@@ -251,12 +404,15 @@ static void tape_process(int32_t *out, uint32_t n)
         }
         out[2u * i] += s;
         tape.frac += (uint32_t)step;
-        while (tape.frac >= 65536u) {            /* (at most once: step < 1 cell) */
+        while (tape.frac >= 65536u) {            /* (a step above 1 cell: DOUBLE with a wobble: more than once) */
             tape.frac -= 65536u;
             if (dub)
                 tape_write(tape.ip, keep, loss_a);
-            tape.ip = nx;
-            nx = rev ? (tape.ip ? tape.ip - 1u : tape.n - 1u) : (tape.ip + 1u < tape.n ? tape.ip + 1u : 0u);
+            tape.ip = tape_nx(tape.ip, rev, tape.n);
+            if (stut && ++tape.srun >= tape.slen) {   /* the stutter: back to where the pad went down */
+                tape.ip = tape.sip < tape.n ? tape.sip : 0u;
+                tape.srun = 0;
+            }
         }
     }
     tape.ip_pub = tape.ip;

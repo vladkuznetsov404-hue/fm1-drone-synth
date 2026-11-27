@@ -1615,6 +1615,401 @@ static void delay_audio(void)
     reset_state();
 }
 
+
+/* Pitch apart from speed, the pads, the artifacts (the cassette's second round). The same 1 s loop of F3. */
+static uint32_t tape_adv(uint32_t frames)        /* render, and how many cells the head moved (mod the loop) */
+{
+    uint32_t a = tape.ip_pub, b;
+    host_render(buf, frames);
+    b = tape.ip_pub;
+    return b >= a ? b - a : b + tape.n - a;
+}
+
+static void tape_pads_audio(void)
+{
+    const uint32_t S = BLOCKS(FS), L = 44096u;
+    uint32_t i, k, lo, hi, cnt, sip;
+    double p, base;
+    host_nor_erase();
+    power_cycle();
+    fx.bypass = 1;
+    cur.p[P_BREATH] = 0;
+    cur.p[P_LAYERS] = 1;
+    cur.p[P_SUB] = 0;
+    cur.p[P_ATTACK] = 0;
+    cur.p[P_RELEASE] = 0;
+    set.g[G_OCT] = 0;
+    set.g[G_WEAR] = 0;
+    set.g[G_DECAY] = 0;
+    tap_key(0);
+    host_render(buf, 1024);
+    tape_rec_s(L - 64u);
+    tap_key(0);
+    host_render(buf, 2048);
+    host_render(buf, L);
+    base = pitch(buf, L);
+    check("pads: the loop sounds at F3 first (174.6 Hz +-1 %)", fabs(base / 174.61 - 1.0) < 0.01);
+
+    set.g[G_PITCH] = 12;
+    host_render(buf, S);
+    host_render(buf, 22050);
+    p = pitch(buf, 22050);
+    check("PITCH +12: an octave up (349.2 Hz +-3 %), the time as it was", fabs(p / 349.22 - 1.0) < 0.03 && tape.gon);
+    i = tape_adv(22050);
+    check("PITCH +12: the head still moves at 1x (11 025 cells in 0.5 s, +-3 %)", fabs(i / 11025.0 - 1.0) < 0.03);
+    set.g[G_PITCH] = -12;
+    host_render(buf, S);
+    host_render(buf, 22050);
+    p = pitch(buf, 22050);
+    check("PITCH -12: an octave down (87.3 Hz +-4 %)", fabs(p / 87.307 - 1.0) < 0.04);
+    set.g[G_PITCH] = 7;
+    host_render(buf, S);
+    host_render(buf, 22050);
+    p = pitch(buf, 22050);
+    check("PITCH +7: a fifth up (261.6 Hz +-3 %)", fabs(p / 261.63 - 1.0) < 0.03);
+    set.g[G_PITCH] = 0;
+    host_render(buf, S);
+    for (i = 0; i < 6u; i++)
+        host_render(buf, 2048);                  /* the grains hand over to the plain read */
+    check("PITCH 0 again: the grains are off, the plain read is back", !tape.gon);
+    p = pitch(buf, 2048u * 4u);
+    host_render(buf, S);
+    check("... at F3 (174.6 Hz +-1 %)", fabs(pitch(buf, S) / 174.61 - 1.0) < 0.01);
+    (void)p;
+
+    set.g[G_SPEED] = 50;
+    set.g[G_LOCK] = 1;
+    host_render(buf, S);
+    host_render(buf, 22050);
+    p = pitch(buf, 22050);
+    check("SPEED 50 with LOCK: the pitch stays (174.6 Hz +-3 %)", fabs(p / 174.61 - 1.0) < 0.03);
+    i = tape_adv(22050);
+    check("SPEED 50 with LOCK: the head moves at half (5 512 cells in 0.5 s, +-3 %)", fabs(i / 5512.5 - 1.0) < 0.03);
+    set.g[G_LOCK] = 0;
+    host_render(buf, S);
+    host_render(buf, 22050);
+    p = pitch(buf, 22050);
+    check("SPEED 50 without LOCK: the pitch falls with it (87.3 Hz +-2 %)", fabs(p / 87.307 - 1.0) < 0.02);
+    set.g[G_SPEED] = 100;
+    host_render(buf, S);
+    host_render(buf, S);
+
+    tape_pads(1u << PD_HALF);
+    host_render(buf, S);
+    host_render(buf, 22050);
+    check("pad HALF: half speed, an octave down (87.3 Hz +-2 %)", fabs(pitch(buf, 22050) / 87.307 - 1.0) < 0.02);
+    tape_pads(1u << PD_DOUBLE);
+    host_render(buf, S);
+    host_render(buf, 22050);
+    check("pad DOUBLE: an octave up (349.2 Hz +-2 %)", fabs(pitch(buf, 22050) / 349.22 - 1.0) < 0.02);
+    tape_pads(1u << PD_STOP);
+    host_render(buf, S);
+    host_render(buf, 4096);
+    check("pad STOP: the tape stops (silence)", peak(buf, 4096) < 30);
+    tape_pads(0);
+    host_render(buf, S);
+    host_render(buf, 8192);
+    check("pad STOP released: it spins up again and plays", peak(buf, 8192) > 2000);
+    tape_pads(1u << PD_REV);
+    host_render(buf, S);
+    host_render(buf, 22050);
+    check("pad REV: the same pitch, backwards (174.6 Hz +-2 %)", fabs(pitch(buf, 22050) / 174.61 - 1.0) < 0.02);
+    tape_pads(0);
+    host_render(buf, S);
+
+    tape_pads(1u << PD_FREEZE);
+    host_render(buf, 2048);
+    lo = tape.ip_pub;
+    host_render(buf, 22050);
+    hi = tape.ip_pub;
+    check("pad FREEZE: the head stays put, the sound goes on", (hi == lo || hi - lo < 4u) && peak(buf, 22050) > 1000);
+    tape_pads(0);
+    host_render(buf, S);
+    for (i = 0; i < 6u; i++)
+        host_render(buf, 2048);
+
+    tape_pads(1u << PD_RESTART);
+    host_render(buf, 64);
+    tape_pads(0);
+    check("pad RESTART: the head is at the start", tape.ip_pub < 400u);
+    lo = tape.ip_pub;
+    tape_pads(1u << PD_SKIP);
+    host_render(buf, 64);
+    tape_pads(0);
+    hi = tape.ip_pub;
+    check("pad SKIP: the head jumps an eighth ahead", hi > lo + tape.n / 8u - 200u && hi < lo + tape.n / 8u + 400u);
+
+    host_render(buf, 64);
+    tape_pads(1u << PD_ST8);
+    host_render(buf, 64);
+    sip = tape.ip_pub;
+    lo = hi = sip;
+    cnt = 0;
+    for (k = 0; k < 80u; k++) {                  /* a second of 1/8 stutter: the head stays within an eighth of the loop */
+        uint32_t d;
+        host_render(buf, 512);
+        d = (tape.ip_pub + tape.n - sip) % tape.n;
+        cnt += d > tape.n / 8u + 400u && d < tape.n / 2u;
+    }
+    check("pad STUTTER 1/8: the head never leaves the eighth it was pressed in", cnt == 0u);
+    tape_pads(0);
+    host_render(buf, S);
+
+    tape_nudge(1);
+    host_render(buf, 512);
+    check("nudge: the tape is faster for a moment", tape.spd_pub > 65536 + 3000);
+    host_render(buf, S);
+    host_render(buf, S);
+    check("nudge: ... and back to the speed", tape.spd_pub == 65536);
+
+    /* the artifacts: windows of 256 samples (one period of F3) well below the loop's level */
+    set.g[G_DROP] = 0;
+    {
+        uint32_t d0 = 0, d1 = 0, d2 = 0, b;
+        double ref;
+        host_render(buf, S);
+        host_render(buf, S);
+        ref = rms(buf, S);
+        for (b = 0; b < 344u; b++) {
+            host_render(buf, 256);
+            d0 += rms(buf, 256) < 0.8 * ref;
+        }
+        set.g[G_DROP] = 100;
+        for (b = 0; b < 344u; b++) {
+            host_render(buf, 256);
+            d1 += rms(buf, 256) < 0.8 * ref;
+        }
+        set.g[G_DROP] = 0;
+        tape_pads(1u << PD_CHEW);
+        host_render(buf, S);
+        for (b = 0; b < 344u; b++) {
+            host_render(buf, 256);
+            d2 += rms(buf, 256) < 0.8 * ref;
+        }
+        tape_pads(0);
+                check("DROPOUT 0, WEAR 0: no dropouts (the loop's own seam: a window or two)", d0 <= 3u);
+        check("DROPOUT 100: the level dips now and then (some windows, not most)", d1 > d0 + 15u && d1 < 250u);
+        check("pad CHEW: dips often too", d2 > d0 + 15u && d2 < 344u);
+    }
+    app_audio_stop();
+    host_render(buf, 64);
+}
+
+
+/* SHOEGAZE's chorus and reverb (shoe.c), alone: a block loop over a mono input */
+static void shoe_run(const int32_t *in, uint32_t frames, int32_t *o)
+{
+    int32_t blk[2u * CTL];
+    uint32_t i, j;
+    for (i = 0; i + CTL <= frames; i += CTL) {
+        for (j = 0; j < CTL; j++) {
+            blk[2u * j] = in[i + j];
+            blk[2u * j + 1u] = 0;
+        }
+        shoe_process(blk, CTL);
+        for (j = 0; j < CTL; j++)
+            o[2u * (i + j)] = blk[2u * j];
+    }
+}
+
+static void shoe_audio(void)
+{
+    uint32_t i, same;
+    double e0, e1, e2, e3;
+    reset_state();
+    host_boot();
+    shoe_clear();
+    set.g[G_MODE] = MODE_SHOE;
+    fx.bypass = 0;
+    memset(dl_in, 0, (DN + 64u) * sizeof dl_in[0]);
+    sine_in(0, 44100, 440.0, 8000.0);
+    cur.p[P_CHORUS] = 0;
+    cur.p[P_REVERB] = 0;
+    shoe_run(dl_in, 44100, dl_out);
+    for (i = same = 0; i < 44096u; i++)
+        same += dl_out[2u * i] == dl_in[i];
+    check("SHOEGAZE with CHORUS 0 and REVERB 0: the sound untouched", same == 44096u);
+
+    cur.p[P_CHORUS] = 100;
+    shoe_run(dl_in, 44100, dl_out);
+    e0 = rms(dl_out + 2u * 22050u, 22050);
+    for (i = same = 0; i < 44096u; i++)
+        same += dl_out[2u * i] == dl_in[i];
+    check("CHORUS 100: the sound is changed, a comb moving across the tone (RMS 0.5 .. 1.0 of the input's)",
+          same < 4000u && e0 / (8000.0 / 1.4142) > 0.5 && e0 / (8000.0 / 1.4142) < 1.0);
+    {                                            /* the taps swing: the level beats over time (a comb moving across the tone) */
+        double lo = 1e9, hi = 0, r;
+        uint32_t w;
+        for (w = 0; w < 40u; w++) {
+            r = rms(dl_out + 2u * (4400u + w * 1000u), 1000);
+            lo = r < lo ? r : lo;
+            hi = r > hi ? r : hi;
+        }
+        check("CHORUS 100: the output's level moves (the delay swings)", hi / lo > 1.05);
+    }
+
+    shoe_clear();
+    cur.p[P_CHORUS] = 0;
+    cur.p[P_REVERB] = 100;
+    memset(dl_in, 0, (DN + 64u) * sizeof dl_in[0]);
+    for (i = 0; i < 64u; i++)
+        dl_in[i] = 8000;
+    shoe_run(dl_in, 396000, dl_out);
+    e0 = rms(dl_out + 2u * 13000u, 4000);        /* 0.3 s on */
+    e1 = rms(dl_out + 2u * 44100u, 4000);        /* 1 s */
+    e2 = rms(dl_out + 2u * 132300u, 4000);       /* 3 s */
+    check("REVERB 100: a tail after a click (0.3 s: audible; 1 s: still; falling)", e0 > 200.0 && e1 > 30.0 && e1 < e0);
+    check("REVERB 100: the tail falls over seconds (3 s below 1 s)", e2 < e1);
+    check("REVERB 100: the click itself is passed (dry first)", dl_out[2u * 10u] >= 7000);
+    {
+        uint32_t quiet_at = 0;
+        for (i = 0; i < 396000u; i++)
+            if (dl_out[2u * i] != 0)
+                quiet_at = i;
+        check("REVERB: the tail ends in exact silence and the state is cleared (before 8 s)",
+              quiet_at < 8u * 44100u && !sh.live && peak(dl_out + 2u * 380000u, 16000) == 0);
+    }
+    cur.p[P_REVERB] = 20;
+    shoe_clear();
+    shoe_run(dl_in, 88200, dl_out);
+    e3 = rms(dl_out + 2u * 44100u, 4000);
+    check("REVERB 20: a shorter, quieter tail than 100 (1 s: lower)", e3 < e1);
+    {
+        static const double F[5] = {55.0, 82.4, 110.0, 164.8, 440.0};
+        int32_t worst = 0;
+        uint32_t f;
+        cur.p[P_REVERB] = 100;
+        for (f = 0; f < 5u; f++) {
+            shoe_clear();
+            memset(dl_in, 0, (DN + 64u) * sizeof dl_in[0]);
+            sine_in(0, 88200, F[f], 11000.0);
+            shoe_run(dl_in, 132300, dl_out);
+            worst = peak(dl_out, 132300) > worst ? peak(dl_out, 132300) : worst;
+        }
+        printf("    reverb worst peak %d\n", worst);
+        check("REVERB 100 with a full-level drone (11 000, five pitches): bounded (< 32 000)", worst < 32000);
+    }
+    set.g[G_MODE] = MODE_HARSH;
+    shoe_run(dl_in, 4096, dl_out);
+    check("back to HARSH: the stages' state is dropped, the sound passes", !sh.on && !sh.live);
+    cur.p[P_REVERB] = 0;
+
+    /* a tail survives the voices' silence (the whole chain: a note, released) */
+    reset_state();
+    host_boot();
+    set.g[G_MODE] = MODE_SHOE;
+    cur.p[P_REVERB] = 100;
+    cur.p[P_CHORUS] = 0;
+    cur.p[P_ATTACK] = 0;
+    cur.p[P_RELEASE] = 0;
+    tap_key(0);
+    host_render(buf, BLOCKS(FS));
+    tap_key(0);
+    host_render(buf, BLOCKS(FS) / 2);
+    host_render(buf, BLOCKS(FS) / 2);
+    check("SHOEGAZE through the whole chain: the reverb rings after the note is off (0.5 s later)",
+          rms(buf, BLOCKS(FS) / 2) > 50.0);
+    app_audio_stop();
+    host_render(buf, 64);
+    set.g[G_MODE] = MODE_HARSH;
+    cur.p[P_REVERB] = 0;
+    shoe_clear();
+}
+
+
+/* SCL: the scales and the chords on the keys */
+static int has_note(uint32_t note)
+{
+    uint32_t i;
+    for (i = 0; i < NV; i++)
+        if (snd.held[i] == note)
+            return 1;
+    return 0;
+}
+
+static void scl_audio(void)
+{
+    uint32_t k, ok;
+    static const uint8_t MIN_A[8] = {57, 59, 60, 62, 64, 65, 67, 69};   /* A natural minor from A3 */
+    reset_state();
+    host_boot();
+    set.g[G_OCT] = 0;
+    check("CHROMATIC (the default): key 0 is F3 = 53, key 13 is 66, whatever the root",
+          key_note(0) == 53 && key_note(13) == 66 && (set.g[G_ROOT] = 4, key_note(0) == 53));
+    set.g[G_ROOT] = 9;
+    set.g[G_SCALE] = 1;
+    for (k = ok = 0; k < 8u; k++)
+        ok += key_note(k) == MIN_A[k];
+    check("MINOR with the root A: the keys climb A B C D E F G A", ok == 8u);
+    check("... and every key maps back (note_key inverts key_note), the notes off the scale map to nothing",
+          note_key(key_note(0)) == 0 && note_key(key_note(12)) == 12 && note_key(key_note(26)) == 26 &&
+          note_key(58) == -1);
+    set.g[G_SCALE] = 5;
+    check("PENT MINOR on A: A C D E G A (five keys an octave)",
+          key_note(0) == 57 && key_note(1) == 60 && key_note(2) == 62 && key_note(3) == 64 && key_note(4) == 67 &&
+          key_note(5) == 69);
+    set.g[G_SCALE] = 0;
+    ok = 1;
+    for (k = 0; k < 27u; k++)
+        ok &= note_key(key_note(k)) == (int32_t)k;
+    check("every scale: note_key inverts key_note on all 27 keys", ok);
+    for (k = 1; k < 7u; k++) {
+        uint32_t m;
+        set.g[G_SCALE] = (int16_t)k;
+        for (m = 0; m < 27u; m++)
+            ok &= note_key(key_note(m)) == (int32_t)m && key_note(m) < 128;
+    }
+    check("... (SCALE 1..6 too)", ok);
+    set.g[G_SCALE] = 1;
+    set.g[G_ROOT] = 9;
+
+    set.g[G_CHORD] = 1;                          /* POWER: the fifth over the key */
+    tap_key(0);
+    check("POWER: one key latches A3 and E4", n_held() == 2 && has_note(57) && has_note(64));
+    tap_key(0);
+    host_render(buf, BLOCKS(FS));
+    check("POWER: the key again releases both", n_held() == 0);
+    set.g[G_CHORD] = 6;                          /* DOOM: 0, 7, 12, 19 */
+    set.g[G_LOW] = 1;
+    tap_key(0);
+    check("DOOM with LOW -1: root, the root an octave down, the fifth and the octave (four voices at most)",
+          n_held() == 4 && has_note(57) && has_note(45) && has_note(64) && has_note(69));
+    tap_key(0);
+    host_render(buf, BLOCKS(FS));
+    check("... and one key releases all four", n_held() == 0);
+    set.g[G_CHORD] = 0;
+    set.g[G_LOW] = 2;
+    tap_key(0);
+    check("SINGLE with LOW -2: the root, and the root two octaves under it", n_held() == 2 && has_note(57) && has_note(33));
+    tap_key(0);
+    host_render(buf, BLOCKS(FS));
+    set.g[G_LOW] = 0;
+    set.g[G_CHORD] = 3;                          /* SUS4 */
+    tap_key(0);
+    tap_key(2);                                  /* a second chord: a note of it (E4's fifth) ... */
+    check("SUS4 twice: four voices are never exceeded", n_held() <= NV);
+    app_audio_stop();
+    host_render(buf, 64);
+
+    /* pads: the keys are not notes while SEQ is held */
+    reset_state();
+    host_boot();
+    snd.pad_mode = 1;
+    tap_key(0);
+    check("pad mode: a key makes no note", n_held() == 0);
+    fm1_in.notes |= 1u;
+    host_render(buf, CTL);
+    snd.pad_mode = 0;
+    host_render(buf, CTL);
+    fm1_in.notes = 0;
+    host_render(buf, CTL);
+    check("... and a key held while SEQ is let go makes none either", n_held() == 0);
+    tap_key(0);
+    check("pad mode off: the key plays again", n_held() == 1);
+    app_audio_stop();
+    host_render(buf, 64);
+}
+
 int main(void)
 {
     if (system("mkdir -p build/shots"))
@@ -1630,6 +2025,9 @@ int main(void)
     factory();
     scope_shot();
     tape_audio();
+    tape_pads_audio();
+    shoe_audio();
+    scl_audio();
     delay_audio();
     puts(failed ? "APP TEST FAILED" : "app test passed");
     return failed ? 1 : 0;

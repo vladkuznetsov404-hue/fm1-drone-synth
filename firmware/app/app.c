@@ -23,6 +23,7 @@
 #include "data.c"
 #include "fx.c"
 #include "breath.c"
+#include "shoe.c"
 #include "tape.c"
 #include "delay.c"
 #include "sound.c"
