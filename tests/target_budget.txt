@@ -4,7 +4,3 @@
 fm1_alnk0_irq 18632
 fm1_timer5_irq 4836
 aud_fade_half 17
-snd_render 0
-dly_process 0
-tape_process 0
-fx_process 0
