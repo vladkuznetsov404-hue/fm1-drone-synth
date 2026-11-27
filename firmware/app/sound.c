@@ -31,7 +31,9 @@
  * about the square root of their number; these keep 2 and 3 layers near the loudness of one */
 static const int32_t LAYER_AMP[NL + 1u] = {0, VAMP, 4400, 3400};
 #define FM_NL 2u                 /* FM pairs per note at most (each costs two sines a sample) */
-#define FM_AMP 8000              /* one FM pair's peak, Q15 (a sine sounds quieter than a saw at the same peak) */
+/* one FM pair's peak for 1, 2 pairs, Q15: a sine sounds quieter than a saw at the same peak (8000 against 7000),
+ * two pairs scaled like two saws (x 4400 / 7000) */
+static const int32_t FM_LAMP[FM_NL + 1u] = {0, 8000, 5029};
 #define XF_STEP 475              /* the engines' crossfade per block, Q15: ~69 blocks, ~50 ms */
 #define FB_MAX 1200000000u       /* FEEDBACK 100 (with MASSA): ~1.75 rad of the carrier's own output */
 #define IX_MAX 2733000000u       /* INDEX 100: 4 rad of modulation (as phase, 2^32 = 2 pi) */
@@ -284,7 +286,7 @@ static void snd_render(int32_t *out, uint32_t n)
         voice_t *v = &snd.v[j];
         uint32_t nl = snd.layers, sph = v->sph, sinc = v->sinc, l, linc[NL], ratio = snd.ratio, ix = snd.ix,
                  fbk = snd.fbk, fnl = nl < FM_NL ? nl : FM_NL;
-        int32_t xf = snd.xf, famp = FM_AMP * LAYER_AMP[fnl] / VAMP;
+        int32_t xf = snd.xf, famp = FM_LAMP[fnl];
         int32_t g = v->gain, st = v->step, top = v->state == V_ON ? G_FULL : 0, lamp = snd.lamp, samp = fx.samp;
         if (v->state == V_OFF)
             continue;

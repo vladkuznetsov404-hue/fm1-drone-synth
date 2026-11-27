@@ -43,6 +43,13 @@ static void press(uint32_t label)                /* a button down for a frame, t
     host_frame();
 }
 
+static int16_t def_of(uint32_t slot, uint32_t code)   /* a slot's value on a fresh unit (INIT or its factory sound) */
+{
+    snd_t d;
+    snd_default(&d, slot);
+    return d.p[code];
+}
+
 static void run_frames(uint32_t k)               /* k main-loop frames (16 ms) with the audio running beside them */
 {
     while (k--) {
@@ -274,7 +281,8 @@ static void controls(void)
 
     press(B_FX);
     turn(EN_K1, 5);
-    check("FX, KNOB 1: fuzz drive +5, the sound marked edited", cur.p[P_DRIVE] == SP[P_DRIVE].def + 5 && snd_dirty());
+    check("FX, KNOB 1: fuzz drive +5, the sound marked edited",
+          cur.p[P_DRIVE] == bank.s[set.g[G_SLOT]].p[P_DRIVE] + 5 && snd_dirty());
     turn(EN_K3, 9);
     check("FX, KNOB 3: cabinet clamped at its last value", cur.p[P_CAB] == 2);
     press(B_GLO);
@@ -354,12 +362,12 @@ static void persistence(void)
     press(B_FX);
     turn(EN_K1, 7);
     press(B_OCTUP);
-    turn(EN_PRESET, 4);                          /* (loads sound 5: the drive back at its default) */
+    turn(EN_PRESET, 4);                          /* (loads sound 5, DARK SUB: its own drive) */
     turn(EN_K1, 7);
     press(B_SAVE);
     press(B_SAVE);
     power_cycle();
-    check("power-on: sound 5 with its drive, octave -1", set.g[G_SLOT] == 4 && cur.p[P_DRIVE] == SP[P_DRIVE].def + 7 &&
+    check("power-on: sound 5 with its drive, octave -1", set.g[G_SLOT] == 4 && cur.p[P_DRIVE] == def_of(4, P_DRIVE) + 7 &&
           set.g[G_OCT] == -1 && bank.s[0].p[P_DRIVE] == SP[P_DRIVE].def);
     {   /* the unit ran another firmware since: its records in the same slots read as empty */
         static uint8_t other[1600];
@@ -400,8 +408,8 @@ static void persistence(void)
         store_save(SLOT_SET, APP_ID, &set, 4u + 2u * G_OCT);
         power_cycle();
         check("older record: its values read, the newer ones at defaults",
-              bank.s[1].p[P_TONE] == 11 && bank.s[1].p[P_RELEASE] == SP[P_RELEASE].def && set.g[G_VOL] == 44 &&
-              set.g[G_OCT] == -2 && !memcmp(bank.s[2].name, "INIT 03     ", NAME_LEN));
+              bank.s[1].p[P_TONE] == 11 && bank.s[1].p[P_RELEASE] == def_of(1, P_RELEASE) && set.g[G_VOL] == 44 &&
+              set.g[G_OCT] == -2 && !memcmp(bank.s[2].name, "SUNN WALL   ", NAME_LEN));
     }
     flash_ok = 0;
     press(B_SAVE);
@@ -917,6 +925,43 @@ static void fm(void)
     fx.bypass = 0;
 }
 
+/* The factory sounds (milestone 8): sixteen names, every value in its range, each one droning (a chord through the
+ * whole chain) without silence and within full scale. */
+static void factory(void)
+{
+    uint32_t i, j, names = 1, ranges = 1, sounds = 1;
+    host_nor_erase();
+    power_cycle();
+    for (i = 0; i < NSND; i++) {
+        for (j = 0; j < i; j++)
+            names &= memcmp(bank.s[i].name, bank.s[j].name, NAME_LEN) != 0;
+        for (j = 0; j < NP; j++)
+            ranges &= bank.s[i].p[j] >= SP[j].lo && bank.s[i].p[j] <= SP[j].hi;
+        ranges &= bank.s[i].engine <= ENG_FM;
+    }
+    check("factory: 16 different names", names);
+    check("factory: every value of every sound in its range", ranges);
+    check("factory: slot 1 INIT, slot 2 MONOLITH, slot 6 FM", !memcmp(bank.s[0].name, "INIT 01     ", NAME_LEN) &&
+          !memcmp(bank.s[1].name, "MONOLITH    ", NAME_LEN) && bank.s[5].engine == ENG_FM);
+    set.g[G_OCT] = -2;
+    for (i = 0; i < NSND; i++) {
+        int32_t pk;
+        set.g[G_SLOT] = (int16_t)i;
+        cur = bank.s[i];
+        cur.p[P_ATTACK] = 0;
+        tap_key(0); tap_key(7); tap_key(12);
+        host_render(buf, BLOCKS(FS));
+        host_render(buf, BLOCKS(FS));
+        pk = peak(buf, BLOCKS(FS));
+        sounds &= pk > 1500 && pk <= 32767;
+        if (pk <= 1500)
+            printf("    factory sound %u too quiet: peak %d\n", i + 1u, pk);
+        app_audio_stop();
+        host_render(buf, 64);
+    }
+    check("factory: every sound drones (a chord: audible, within full scale)", sounds);
+}
+
 /* The cassette's audio (milestones 6, 7). The voices alone (fx.bypass: a clean saw to measure), F3 (174.61 Hz). */
 static void tape_rec_s(uint32_t frames)          /* REC, frames of audio, REC: a loop of that length, playing */
 {
@@ -1096,6 +1141,7 @@ int main(void)
     fx_chain();
     breath();
     fm();
+    factory();
     tape_audio();
     puts(failed ? "APP TEST FAILED" : "app test passed");
     return failed ? 1 : 0;

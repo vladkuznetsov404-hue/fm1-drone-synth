@@ -177,5 +177,7 @@ Step sequencer, arpeggiator, saving the tape, MIDI CC / clock / out, stereo effe
 5. **FM engine** and the ALGORITHM crossfade; measure the ISR budget.
 6. **Cassette I**: record, loop, play / stop, overdub with decay, erase.
 7. **Cassette II**: speed ½ / varispeed, reverse, brake, wear (wow, flutter, saturation, hiss).
-8. **Presets**: 16 slots with names, PRESETS browsing, factory sounds.
+8. **Presets** (built): 16 slots with names, PRESETS browsing; on a fresh unit slot 1 is INIT (the values' defaults)
+   and slots 2..16 are factory sounds: MONOLITH, SUNN WALL, BEATING, DARK SUB, FM RUST, BELL TOLL, FM GROWL, SOUR
+   CHORUS, TIDE, GLASS, TAR PIT, SWARM, ORGAN DOOM, FIZZ, HUM (`data.c` FACTORY).
 9. **HOME picture** and polish; then the first install on the FM-1 (new UC25HQ80 flash chip: the platform supports it).

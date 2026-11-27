@@ -88,6 +88,33 @@ static snd_t cur;                /* the sound playing (the edit buffer): PRESETS
 
 static int16_t clamp16(int32_t v, int32_t lo, int32_t hi) { return (int16_t)(v < lo ? lo : v > hi ? hi : v); }
 
+/* The factory sounds of slots 2..16 (slot 1 is INIT: the values' defaults). Values in the order of P_*:
+ * MASSA BEATS DARK BREATH | LAYERS SUB SUBOCT CURVE | RATIO FB INDEX | DRIVE TONE CAB LEVEL | SWELL RELEASE |
+ * RATE TOPITCH TOCUT TOLEVEL (SWELL and RELEASE in tenths of a second, RATE in hundredths of a Hz). */
+typedef struct {
+    char name[NAME_LEN + 1];
+    uint8_t engine;
+    uint8_t p[NP];
+} factory_t;
+
+static const factory_t FACTORY[NSND - 1] = {
+    {"MONOLITH", ENG_SAW, {80, 20, 55, 30, 3, 80, 1, 60, 1, 30, 40, 70, 40, 1, 80, 40, 80, 8, 20, 40, 20}},
+    {"SUNN WALL", ENG_SAW, {100, 35, 45, 40, 3, 70, 1, 50, 1, 30, 40, 90, 55, 1, 80, 30, 60, 10, 20, 50, 30}},
+    {"BEATING", ENG_SAW, {20, 60, 30, 20, 2, 30, 1, 80, 1, 30, 40, 20, 60, 1, 80, 20, 40, 10, 10, 30, 20}},
+    {"DARK SUB", ENG_SAW, {50, 15, 85, 50, 3, 100, 2, 50, 1, 30, 40, 40, 40, 2, 80, 60, 120, 6, 20, 60, 30}},
+    {"FM RUST", ENG_FM, {60, 25, 40, 30, 2, 50, 1, 50, 1, 70, 30, 60, 50, 1, 80, 30, 60, 10, 20, 40, 20}},
+    {"BELL TOLL", ENG_FM, {20, 10, 30, 40, 2, 20, 1, 50, 3, 10, 60, 25, 60, 0, 75, 10, 120, 8, 30, 30, 40}},
+    {"FM GROWL", ENG_FM, {80, 30, 50, 30, 2, 60, 1, 50, 2, 50, 70, 80, 50, 1, 80, 20, 60, 12, 20, 50, 20}},
+    {"SOUR CHORUS", ENG_SAW, {40, 90, 35, 60, 3, 40, 1, 20, 1, 30, 40, 40, 60, 1, 80, 30, 60, 20, 40, 40, 30}},
+    {"TIDE", ENG_SAW, {50, 30, 50, 100, 3, 50, 1, 50, 1, 30, 40, 50, 50, 1, 80, 50, 100, 5, 60, 100, 80}},
+    {"GLASS", ENG_FM, {0, 15, 20, 40, 2, 10, 1, 50, 4, 0, 20, 0, 70, 0, 70, 30, 100, 10, 20, 30, 30}},
+    {"TAR PIT", ENG_SAW, {90, 20, 90, 30, 3, 100, 2, 50, 1, 30, 40, 100, 20, 2, 80, 40, 80, 6, 20, 40, 20}},
+    {"SWARM", ENG_SAW, {70, 100, 40, 70, 3, 40, 1, 0, 1, 30, 40, 60, 60, 1, 80, 20, 60, 60, 100, 50, 30}},
+    {"ORGAN DOOM", ENG_FM, {50, 10, 40, 30, 2, 60, 1, 50, 2, 20, 30, 50, 50, 1, 80, 30, 60, 8, 20, 40, 20}},
+    {"FIZZ", ENG_SAW, {100, 40, 10, 20, 3, 30, 1, 50, 1, 30, 40, 100, 100, 0, 70, 10, 40, 10, 20, 20, 20}},
+    {"HUM", ENG_SAW, {10, 5, 60, 20, 1, 60, 1, 50, 1, 30, 40, 10, 40, 1, 80, 20, 40, 8, 10, 30, 20}},
+};
+
 static void snd_default(snd_t *s, uint32_t slot)
 {
     static const char base[] = "INIT ";
@@ -102,6 +129,16 @@ static void snd_default(snd_t *s, uint32_t slot)
     s->np = NP;
     for (i = 0; i < P_ROOM; i++)
         s->p[i] = i < NP ? SP[i].def : 0;
+    if (slot >= 1u && slot < NSND) {             /* a factory sound */
+        const factory_t *f = &FACTORY[slot - 1u];
+        for (i = 0; i < NAME_LEN; i++)
+            s->name[i] = ' ';
+        for (i = 0; i < NAME_LEN && f->name[i]; i++)
+            s->name[i] = f->name[i];
+        s->engine = f->engine;
+        for (i = 0; i < NP; i++)
+            s->p[i] = f->p[i];
+    }
 }
 
 static void snd_check(snd_t *s, uint32_t slot)   /* a sound read from flash: keep what is valid, default the rest */
