@@ -49,7 +49,8 @@ static int ui_live(int32_t code)                 /* does this value reach the so
            code == P_BREATH || code == P_RATE || code == P_TOPITCH || code == P_TOCUT ||
            code == P_TOLEVEL ||                 /* (milestone 4: BREATH) */
            code == C_G + G_SPEED || code == C_G + G_DIR || code == C_G + G_DECAY || code == C_G + G_WEAR ||
-           code == C_G + G_BRAKE;               /* (milestones 6, 7: the cassette) */
+           code == C_G + G_BRAKE ||             /* (milestones 6, 7: the cassette) */
+           code == P_RATIO || code == P_FB || code == P_INDEX;   /* (milestone 5: FM) */
 }
 
 static int32_t cell(uint32_t page, uint32_t i)

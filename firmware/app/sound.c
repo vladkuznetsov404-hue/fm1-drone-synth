@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-only
  * Copyright (C) 2026 Vlad Kuznetsov */
-/* The sound (audio ISR): the latch and four voices of the SAW drone engine (milestone 2 of docs/SPEC.md): per note
- * 1..3 band-limited saws detuned by BEATS (SPREAD CURVE shapes the knob) and a sine sub one or two octaves down, with
+/* The sound (audio ISR): the latch and four voices of two drone engines. SAW (milestone 2 of docs/SPEC.md): per note
+ * 1..3 band-limited saws detuned by BEATS (SPREAD CURVE shapes the knob). FM (milestone 5): per note 1..2 detuned
+ * two-operator pairs, the carrier with self-feedback (FEEDBACK: a sine grows into a dirty saw, the DX7's operator-1
+ * trick) and a modulator at RATIO x the note (INDEX). Both with a sine sub one or two octaves down, with
  * the swell and release of the sound's ENV values and the master volume, into the chain of fx.c (the fuzz, the
  * cabinet, DARK), with BREATH's slow pitch drift (breath.c), and the cassette (tape.c). The FM engine comes in
  * milestone 5; the latch and its rules are final here.
@@ -28,6 +30,20 @@
 /* the saws' level per layer for 1, 2, 3 layers: detuned saws rarely line up, so their sum is louder than one saw by
  * about the square root of their number; these keep 2 and 3 layers near the loudness of one */
 static const int32_t LAYER_AMP[NL + 1u] = {0, VAMP, 4400, 3400};
+#define FM_NL 2u                 /* FM pairs per note at most (each costs two sines a sample) */
+#define FM_AMP 8000              /* one FM pair's peak, Q15 (a sine sounds quieter than a saw at the same peak) */
+#define XF_STEP 475              /* the engines' crossfade per block, Q15: ~69 blocks, ~50 ms */
+#define FB_MAX 1200000000u       /* FEEDBACK 100 (with MASSA): ~1.75 rad of the carrier's own output */
+#define IX_MAX 2733000000u       /* INDEX 100: 4 rad of modulation (as phase, 2^32 = 2 pi) */
+
+/* A sine for the FM operators: the parabola 4 u (1 - |u|) and one correction step, y += 0.225 (y |y| - y), within
+ * ~0.1 % of a sine (the sub's plain parabola has 3 % third harmonic: fine for a sub, too much for FM). Q15. */
+static inline __attribute__((always_inline)) int32_t fm_sine(uint32_t ph)
+{
+    int32_t u = (int16_t)(ph >> 16), y = u * (32768 - (u < 0 ? -u : u)) >> 13;
+    y = y > 32767 ? 32767 : y;
+    return y + (((y * (y < 0 ? -y : y) >> 15) - y) * 7373 >> 15);
+}
 #define G_FULL (1 << 24)
 #define MIN_RAMP 256             /* samples (~6 ms): the shortest swell or release, no clicks at 0 s */
 
@@ -42,6 +58,8 @@ typedef struct {
     uint32_t ph[NL], inc[NL];    /* the layers' phases and increments (2^32 = one cycle) */
     uint32_t rinv[NL];           /* 2^31 / (inc >> 8): turns a phase near the wrap into the polyBLEP's x (Q15) */
     uint32_t sph, sinc;          /* the sub */
+    uint32_t mph[FM_NL];         /* FM: the modulators' phases (the carriers use ph[]) */
+    int32_t c1[FM_NL], c2[FM_NL];   /* FM: the carriers' last two outputs (their feedback is the average) */
     uint32_t base, age;          /* base: the note's increment; age: when it started (snd.clock), the oldest is stolen */
     int32_t gain, step;          /* Q24; step per sample, + while rising, - while falling */
     uint8_t note, state, src;
@@ -58,7 +76,21 @@ static struct {
     int32_t off[NL];             /* the layers' detune, Q24 (an increment changes by inc * off >> 24) */
     int32_t lamp;                /* a layer's level, Q15 (the sub's: fx.samp, with MASSA's lift) */
     uint8_t layers, subsh;       /* layers sounding; the sub's octave shift */
-} snd;
+    int32_t xf;                  /* the crossfade: 0 SAW .. 32 768 FM, Q15 */
+    uint32_t fbk, ix, ratio;     /* FM: the feedback and the index as phase per unit (>> 15 applied), the ratio */
+    int16_t fm_last[3];          /* the values fm_update last used: FEEDBACK, INDEX, MASSA (-1 never) */
+} snd = {.fm_last = {-1, -1, -1}};
+
+static __attribute__((noinline)) void fm_update(void)   /* FEEDBACK (+ half of MASSA) and INDEX -> phase amounts */
+{
+    int32_t fb = cur.p[P_FB] + cur.p[P_MASSA] / 2;
+    fb = fb > 100 ? 100 : fb;
+    snd.fm_last[0] = cur.p[P_FB];
+    snd.fm_last[1] = cur.p[P_INDEX];
+    snd.fm_last[2] = cur.p[P_MASSA];
+    snd.fbk = (FB_MAX >> 15) * (uint32_t)fb / 100u;
+    snd.ix = (IX_MAX >> 15) * (uint32_t)cur.p[P_INDEX] / 100u;
+}
 
 static uint32_t note_inc(uint32_t n)             /* MIDI note -> phase increment */
 {
@@ -159,6 +191,10 @@ static __attribute__((noinline)) void snd_toggle(uint32_t note, uint32_t src)   
         v->ph[2] = 0xAAAAAAAAu;
         v->sph = 0;
     }
+    if (v->state == V_OFF) {
+        v->mph[0] = v->mph[1] = 0;
+        v->c1[0] = v->c1[1] = v->c2[0] = v->c2[1] = 0;
+    }
     v->note = (uint8_t)note;
     v->base = note_inc(note);
     snd_tune(v);
@@ -236,9 +272,19 @@ static void snd_render(int32_t *out, uint32_t n)
         snd_retune();
     fx_check();
     breath_block();                              /* the LFOs: br.pm, fx.dark_a, fx.lmod (breath.c) */
+    if (snd.fm_last[0] != cur.p[P_FB] || snd.fm_last[1] != cur.p[P_INDEX] || snd.fm_last[2] != cur.p[P_MASSA])
+        fm_update();
+    snd.ratio = (uint32_t)(cur.p[P_RATIO] < 1 ? 1 : cur.p[P_RATIO] > 8 ? 8 : cur.p[P_RATIO]);
+    {                                            /* the crossfade towards the engine chosen */
+        int32_t t = cur.engine == ENG_FM ? 32768 : 0;
+        snd.xf = snd.xf < t ? (snd.xf + XF_STEP > t ? t : snd.xf + XF_STEP) :
+                 snd.xf > t ? (snd.xf - XF_STEP < t ? t : snd.xf - XF_STEP) : t;
+    }
     for (j = 0; j < NV; j++) {
         voice_t *v = &snd.v[j];
-        uint32_t nl = snd.layers, sph = v->sph, sinc = v->sinc, l, linc[NL];
+        uint32_t nl = snd.layers, sph = v->sph, sinc = v->sinc, l, linc[NL], ratio = snd.ratio, ix = snd.ix,
+                 fbk = snd.fbk, fnl = nl < FM_NL ? nl : FM_NL;
+        int32_t xf = snd.xf, famp = FM_AMP * LAYER_AMP[fnl] / VAMP;
         int32_t g = v->gain, st = v->step, top = v->state == V_ON ? G_FULL : 0, lamp = snd.lamp, samp = fx.samp;
         if (v->state == V_OFF)
             continue;
@@ -246,9 +292,29 @@ static void snd_render(int32_t *out, uint32_t n)
             linc[l] = v->inc[l] + (uint32_t)((int32_t)(v->inc[l] >> 12) * (br.pm >> 4) >> 8);
         sinc += (uint32_t)((int32_t)(sinc >> 12) * (br.pm >> 4) >> 8);
         for (i = 0; i < n; i++) {
-            int32_t acc = 0, u, y;
+            int32_t acc = 0, acc_s = 0, u, y;
             g += st;
             g = st > 0 ? (g > top ? top : g) : (g < 0 ? 0 : g);
+            if (xf) {                            /* FM: two sines a pair (the carriers use the saws' phases) */
+                int32_t fm = 0;
+                for (l = 0; l < fnl; l++) {
+                    uint32_t cph = xf == 32768 ? (v->ph[l] += linc[l]) : v->ph[l] + linc[l];   /* (mid-fade the
+                                                  * saws' loop below moves the phase: once) */
+                    int32_t m, c;
+                    v->mph[l] += linc[l] * ratio;
+                    m = fm_sine(v->mph[l]);
+                    c = fm_sine(cph + (uint32_t)m * ix + (uint32_t)((v->c1[l] + v->c2[l]) >> 1) * fbk);
+                    v->c2[l] = v->c1[l];
+                    v->c1[l] = c;
+                    fm += c;
+                }
+                fm = fm * famp >> 15;
+                if (xf == 32768) {
+                    acc = fm;
+                    goto sub;
+                }
+                acc = fm * xf >> 15;
+            }
             for (l = 0; l < nl; l++) {
                 uint32_t p = v->ph[l] += linc[l];
                 int32_t s = (int32_t)(p >> 16) - 32768, x;
@@ -259,9 +325,10 @@ static void snd_render(int32_t *out, uint32_t n)
                     x = (int32_t)((((0u - p) >> 8) * v->rinv[l]) >> 16);
                     s -= (x * x >> 15) - 2 * x + 32768;
                 }
-                acc += s;
+                acc_s += s;
             }
-            acc = acc * lamp >> 15;
+            acc += (acc_s * lamp >> 15) * (32768 - xf) >> 15;
+        sub:
             sph += sinc;                         /* the sub: 4 u (1 - |u|) over the half cycles, u = phase */
             u = (int16_t)(sph >> 16);
             y = u * (32768 - (u < 0 ? -u : u)) >> 13;

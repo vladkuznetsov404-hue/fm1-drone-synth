@@ -83,8 +83,12 @@ Each page draws only what changed (the platform's lazy drawing).
     spread. A layer's level falls with their number (7000, 4400, 3400 of 32 767) so 2 and 3 layers sound about as
     loud as one. New notes start their layers a third of a cycle apart (no phasey attack). The tuning is worked out
     when a note starts or a tuning value changes, never per sample.
-  - **FM** engine: 2-operator voices with operator feedback (feedback = a dirty saw-like tone), 1..2 detuned copies,
-    plus the sine sub. The DX7 engine of the stock firmware is not used.
+  - **FM** engine (milestone 5, built): per note 1..2 detuned pairs (LAYERS, capped at 2; spread like the saws) of a
+    carrier at the note and a modulator at RATIO × the note (INDEX: up to 4 rad); the carrier feeds back on itself
+    (the average of its last two outputs, up to ~1.75 rad: FEEDBACK + half of MASSA), so FEEDBACK alone turns the
+    sine into a dirty saw. Sines: a corrected parabola (~0.1 %). Plus the sine sub. ALGORITHM crossfades SAW ↔ FM
+    over ~50 ms (both engines render meanwhile), the notes keep sounding. The DX7 engine of the stock firmware is
+    not used.
 - A shared chain after the voices (milestone 3, built: `fx.c`, integer): DC block → **fuzz** (gain up to 48 dB:
   FUZZ DRIVE and MASSA add up to 25 dB each; an asymmetric cubic soft clip, +1.0 / −0.8) → DC block → **tone**
   (a ~1 kHz one-pole, the rest mixed back in by FUZZ TONE) → **LEVEL** → **cabinet** (off; 4×12: a 4th-order

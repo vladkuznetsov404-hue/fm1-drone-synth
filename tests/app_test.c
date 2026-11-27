@@ -93,6 +93,7 @@ static void reset_state(void)                    /* the app's RAM as at power-on
 {
     memset(&ui, 0, sizeof ui);
     memset(&snd, 0, sizeof snd);
+    memset(snd.fm_last, 0xFF, sizeof snd.fm_last);
     memset(&fx, 0, sizeof fx);
     memset(fx.last, 0xFF, sizeof fx.last);       /* (-1: never updated, as at power-on) */
     fx.lmod = 32768;
@@ -845,6 +846,77 @@ static void breath(void)
     host_render(buf, 64);
 }
 
+/* The FM engine (milestone 5): a pure sine at INDEX and FEEDBACK 0, sidebands from INDEX at RATIO's spacing, the
+ * feedback's saw, MASSA's share of it, two pairs at most, the crossfade from SAW without a gap. Voices alone, F3. */
+static void fm(void)
+{
+    const uint32_t S = BLOCKS(FS);
+    const double F = 174.614;
+    double f1, f2, f3;
+    uint32_t i, gap;
+    host_nor_erase();
+    power_cycle();
+    fx.bypass = 1;
+    cur.p[P_BREATH] = 0;
+    cur.p[P_ATTACK] = 0;
+    cur.p[P_SUB] = 0;
+    cur.p[P_MASSA] = 0;
+    cur.p[P_LAYERS] = 1;
+    cur.p[P_FB] = 0;
+    cur.p[P_INDEX] = 0;
+    cur.p[P_RATIO] = 1;
+    set.g[G_OCT] = 0;
+    cur.engine = ENG_FM;
+    tap_key(0);
+    host_render(buf, S); host_render(buf, S);
+    f1 = level_at(buf, S, F); f2 = level_at(buf, S, 2.0 * F); f3 = level_at(buf, S, 3.0 * F);
+    check("FM, INDEX and FEEDBACK 0: a pure sine at the note (2nd, 3rd < 1 %)", f1 > 6000 && f2 < f1 / 100 &&
+          f3 < f1 / 100 && fabs(pitch(buf, S) / F - 1.0) < 0.003);
+    cur.p[P_INDEX] = 50;
+    host_render(buf, S); host_render(buf, S);
+    f1 = level_at(buf, S, F); f2 = level_at(buf, S, 2.0 * F);
+    check("INDEX 50, RATIO 1: harmonics appear (2nd > 1/5 of the 1st)", f2 > f1 / 5);
+    cur.p[P_RATIO] = 2;
+    host_render(buf, S); host_render(buf, S);
+    f1 = level_at(buf, S, F); f2 = level_at(buf, S, 2.0 * F); f3 = level_at(buf, S, 3.0 * F);
+    check("RATIO 2: odd sidebands (3rd strong), the even ones not (2nd < 1/20 of the 3rd)", f3 > f1 / 5 &&
+          f2 < f3 / 20);
+    cur.p[P_RATIO] = 1;
+    cur.p[P_INDEX] = 0;
+    cur.p[P_FB] = 100;
+    host_render(buf, S); host_render(buf, S);
+    f1 = level_at(buf, S, F); f2 = level_at(buf, S, 2.0 * F); f3 = level_at(buf, S, 3.0 * F);
+    check("FEEDBACK 100: the sine grows into a saw (2nd > 1/4, 3rd > 1/8 of the 1st)", f2 > f1 / 4 && f3 > f1 / 8);
+    cur.p[P_FB] = 0;
+    cur.p[P_MASSA] = 100;
+    host_render(buf, S); host_render(buf, S);
+    f1 = level_at(buf, S, F); f2 = level_at(buf, S, 2.0 * F);
+    check("MASSA 100 adds feedback (2nd > 1/8 of the 1st at FEEDBACK 0)", f2 > f1 / 8);
+    cur.p[P_MASSA] = 0;
+    cur.p[P_LAYERS] = 3;                         /* FM: two pairs at most, detuned like the saws (+-40 c at 100) */
+    cur.p[P_BEATS] = 100;
+    host_render(buf, S); host_render(buf, S);
+    check("FM, 3 layers: two pairs (at +-40 c), none at the note", level_at(buf, S, F * pow(2.0, 40.0 / 1200.0)) > 1500 &&
+          level_at(buf, S, F / pow(2.0, 40.0 / 1200.0)) < 300);
+    cur.p[P_LAYERS] = 1;
+    cur.p[P_BEATS] = 0;
+    cur.engine = ENG_SAW;                        /* the crossfade: no gap, then the saw's harmonics */
+    host_render(buf, BLOCKS(FS / 10));           /* 0.1 s: the whole crossfade, in windows of 256 */
+    for (i = gap = 0; i + 256u <= BLOCKS(FS / 10); i += 256u)
+        gap |= peak(buf + 2u * i, 256) < 2000;
+    host_render(buf, S);
+    check("ALGORITHM FM -> SAW: no gap through the crossfade, then a saw (2nd ~1/2)", !gap && snd.xf == 0 &&
+          level_at(buf, S, 2.0 * F) > level_at(buf, S, F) / 3);
+    cur.engine = ENG_FM;
+    host_render(buf, 1024);
+    check("SAW -> FM: still crossfading after 23 ms (not a switch)", snd.xf > 8000 && snd.xf < 24000);
+    host_render(buf, 3072);
+    check("SAW -> FM: the crossfade is ~50 ms (done within 4 096 samples)", snd.xf == 32768);
+    app_audio_stop();
+    host_render(buf, 64);
+    fx.bypass = 0;
+}
+
 /* The cassette's audio (milestones 6, 7). The voices alone (fx.bypass: a clean saw to measure), F3 (174.61 Hz). */
 static void tape_rec_s(uint32_t frames)          /* REC, frames of audio, REC: a loop of that length, playing */
 {
@@ -1023,6 +1095,7 @@ int main(void)
     engine();
     fx_chain();
     breath();
+    fm();
     tape_audio();
     puts(failed ? "APP TEST FAILED" : "app test passed");
     return failed ? 1 : 0;
