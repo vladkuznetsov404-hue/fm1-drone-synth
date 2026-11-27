@@ -42,8 +42,8 @@ jobs:
 
       - name: Debug (temporary) the audio ISR's calls
         run: |
-          awk '/<fm1_alnk0_irq>:/,/^$/' build/firmware.dis | grep -iE "call|jal|jl |<__" | sed 's/^/ISRDBG /' | head -60 || true
-          grep -E "^[0-9a-f]+ <__(mul|div|ash|lsh|ad|sub)" build/firmware.dis | sed 's/^/ISRDBG helper /' || true
+          awk '/^fm1_alnk0_irq:$/{f=1} f&&/^[A-Za-z_][A-Za-z_0-9.]*:$/&&!/^fm1_alnk0_irq:$/{f=0} f' build/firmware.dis | grep -E "call" | sed 's/^/ISRDBG /' | head -40 || true
+          grep -E "^__[a-z0-9]+:$" build/firmware.dis | sed 's/^/ISRDBG helper /' | head -20 || true
 
       - name: Host tests
         run: |
