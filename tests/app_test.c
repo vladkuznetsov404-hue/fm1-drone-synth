@@ -130,7 +130,9 @@ static void screen(void)
     static const struct { uint32_t btn, page; const char *shot; } PAGES[] = {
         {B_EDIT, PG_EDIT, "build/shots/edit_saw.png"}, {B_FX, PG_FX, "build/shots/fx.png"},
         {B_ENV, PG_ENV, "build/shots/env.png"},        {B_LFO, PG_LFO, "build/shots/lfo.png"},
+        {B_SCL, PG_SCL, "build/shots/scl.png"},
         {B_ARP, PG_DELAY, "build/shots/delay.png"},    {B_ARP, PG_DELAY2, "build/shots/delay2.png"},
+        {B_ARP, PG_DELAY3, "build/shots/delay3.png"},  {B_ARP, PG_DELAY4, "build/shots/delay4.png"},
         {B_SEQ, PG_TAPE, "build/shots/tape.png"},      {B_SEQ, PG_TAPE2, "build/shots/tape2.png"},
         {B_GLO, PG_GLO, "build/shots/glo.png"},        {B_HOME, PG_HOME, "build/shots/home_again.png"},
     };
@@ -149,12 +151,15 @@ static void screen(void)
     host_png("build/shots/boot.png");
     check("boot: the MASSA palette (black background)", T_BG == 0 && T_THEME != T_TEXT);
     host_frame();
-    check("HOME: header, sound line, notes, tape and four macro rows drawn",
-          ink_rows(0, 24) > 8u && ink_rows(24, 48) > 8u && ink_rows(50, 100) > 2u && ink_rows(102, 126) > 8u &&
-          ink_rows(128, 240) > 60u && ui.page == PG_HOME);
+    check("HOME: header, sound line, the black hole, the tape's line and the four macro dials drawn",
+          ink_rows(0, 24) > 8u && ink_rows(24, 48) > 8u && ink_rows(48, 152) > 40u && ink_rows(152, 176) > 8u &&
+          ink_rows(178, 236) > 30u && ui.page == PG_HOME);
     host_png("build/shots/home.png");
+    press(B_EDIT);                               /* (HOME's picture moves by itself: the lazy test is on a still page) */
+    host_frame();
     host_frame();
     check("lazy: nothing changed, nothing sent to the panel", host_blits == 0u);
+    press(B_HOME);
     turn(EN_K1, 3);
     check("KNOB 1 on HOME: MASSA +3, only its areas sent", cur.p[P_MASSA] == SP[P_MASSA].def + 3 && host_blits > 0u &&
           host_blits <= 3u);
@@ -185,20 +190,28 @@ static void screen(void)
     snd.last_midi = 1;
     for (r = 0; r < 2u; r++) {
         cur.engine = (uint8_t)r;
-        for (p = 0; p < NPG; p++) {
-            ui_page(p);
+        for (p = 0; p < NPG * 2u; p++) {         /* (the pages twice: HARSH's and SHOEGAZE's cells) */
+            set.g[G_MODE] = (int16_t)(p / NPG);
+            ui_page(p % NPG);
             host_frame();
             for (i = 0; i < 4u; i++) {
-                int32_t c = cell(p, i), v;
+                int32_t c = cell(p % NPG, i), v;
                 const par_t *q = cell_par(c);
                 if (!q)
                     continue;
                 for (v = q->lo; v <= q->hi; v++) {
                     char t[24];
                     if (c >= C_G) set.g[c - C_G] = (int16_t)v; else cur.p[c] = (int16_t)v;
-                    host_frame();
+                    {
+                        uint32_t was = host_clipped;
+                        host_frame();
+                        if (host_clipped != was)
+                            printf("  (clip: page %u mode %d eng %u cell %u v %d: '%s' %d,%d..%d,%d in %dx%d)\n", (unsigned)(p % NPG),
+                                   (int)set.g[G_MODE], (unsigned)r, (unsigned)i, (int)v, host_clip_buf, host_clip_box[0],
+                                   host_clip_box[1], host_clip_box[2], host_clip_box[3], host_clip_box[4], host_clip_box[5]);
+                    }
                     par_text(t, sizeof t, v, q->fmt);    /* label, SOON and value side by side, 8 px apart */
-                    if (page_scene(p)) {                 /* a dial's cell: label and value each inside 58 px */
+                    if (page_scene(p % NPG) || p % NPG == PG_HOME) {   /* a dial's cell: label and value each inside 58 px */
                         if (text_w(&AF_S, dial_label(c)) > 58 || text_w(&AF_S, t) > 58) {
                             overlap++;
                             printf("  (dial too wide: %s %s)\n", dial_label(c), t);
@@ -211,6 +224,7 @@ static void screen(void)
             }
         }
     }
+    set.g[G_MODE] = MODE_HARSH;
     memcpy(cur.name, "WWWWWWWWWWWW", NAME_LEN);
     set.g[G_SLOT] = 15;
     set.g[G_OCT] = -3;
@@ -237,7 +251,7 @@ static void screen(void)
     check("layout: HOME's tape line: state, bar and SOON 8 px apart",
           40 + text_w(&AF_M, "EMPTY") + 8 <= TB_X && TB_X + TB_W + 8 <= 232 - text_w(&AF_S, "SOON"));
     if (host_clipped)
-        printf("  (%u, the last: %s)\n", host_clipped, host_clip_what);
+        printf("  (%u, the last: %s %d,%d..%d,%d in %dx%d)\n", host_clipped, host_clip_buf, host_clip_box[0], host_clip_box[1], host_clip_box[2], host_clip_box[3], host_clip_box[4], host_clip_box[5]);
     power_cycle();
 }
 
@@ -276,7 +290,17 @@ static void controls(void)
     host_png("build/shots/four.png");
     press(B_SCL);
     host_render(buf, CTL);
-    check("SCL: every note released, SILENCE shown", n_held() == 0u && toast_on() && str_eq(ui.toast, "SILENCE"));
+    check("SCL tapped: the scale page, the notes go on", ui.page == PG_SCL && n_held() == 4u && !toast_on());
+    host_press(B_SCL, 1);
+    host_frame();
+    fm1_ms += 900u;
+    host_frame();
+    host_render(buf, CTL);
+    host_press(B_SCL, 0);
+    host_frame();
+    check("SCL held 0.8 s: every note released, SILENCE shown, the page stays", n_held() == 0u && toast_on() &&
+          str_eq(ui.toast, "SILENCE") && ui.page == PG_SCL);
+    press(B_HOME);
 
     turn(EN_PRESET, 2);
     check("PRESETS +2: sound 3 loaded", set.g[G_SLOT] == 2 && !memcmp(&cur, &bank.s[2], sizeof cur));
@@ -304,6 +328,11 @@ static void controls(void)
     press(B_ARP);
     check("ARP again: DELAY 2 (WOBBLE, DULL)", ui.page == PG_DELAY2 && cell(PG_DELAY2, 0) == C_G + G_DWOB);
     press(B_ARP);
+    check("ARP again: DELAY 3 (GRAINS, SIZE)", ui.page == PG_DELAY3 && cell(PG_DELAY3, 0) == C_G + G_GMIX);
+    press(B_ARP);
+    check("ARP again: DELAY 4 (SCATTER, REVERSE)", ui.page == PG_DELAY4 && cell(PG_DELAY4, 0) == C_G + G_GSCAT);
+    press(B_ARP);
+    check("ARP once more: round to DELAY", ui.page == PG_DELAY);
     turn(EN_K1, 5);
     turn(EN_K2, -5);
     turn(EN_K3, 7);
@@ -353,6 +382,68 @@ static void controls(void)
     check("SEQ: the TAPE page, SEQ lit", ui.page == PG_TAPE && host_led[panel.btn[B_SEQ]]);
     press(B_SEQ);
     check("SEQ on TAPE: TAPE 2 (BRAKE)", ui.page == PG_TAPE2 && cell(PG_TAPE2, 0) == C_G + G_BRAKE);
+    {   /* SEQ held: the keys are the cassette's pads, not notes; a pad played keeps the page where it is */
+        uint32_t held0 = n_held();
+        host_press(B_SEQ, 1);
+        host_frame();
+        fm1_in.notes |= 1u;                      /* pad 1: REV */
+        host_frame();
+        host_render(buf, CTL);
+        check("SEQ held, key 1: the pad REV is on, no note", (tape.pads & 1u) && n_held() == held0 && snd.pad_mode);
+        fm1_in.notes = 0;
+        host_frame();
+        host_render(buf, CTL);
+        host_press(B_SEQ, 0);
+        host_frame();
+        check("... let go: the pad off, the page not changed (a pad was played)", !(tape.pads & 1u) && !snd.pad_mode &&
+              ui.page == PG_TAPE2);
+        {
+            uint8_t f0 = dl.freeze;
+            host_press(B_SEQ, 1);
+            host_frame();
+            fm1_in.notes |= 1u << PD_ECHO;
+            host_frame();
+            fm1_in.notes = 0;
+            host_frame();
+            check("pad 15 (ECHO): the echo's freeze toggles", dl.freeze != f0);
+            fm1_in.notes |= 1u << PD_ECHO;
+            host_frame();
+            fm1_in.notes = 0;
+            host_frame();
+            host_press(B_SEQ, 0);
+            host_frame();
+            check("... and back with the next press", dl.freeze == f0 && ui.page == PG_TAPE2);
+        }
+        host_press(B_SEQ, 1);                    /* a SEQ tap with no pad: TAPE <-> TAPE 2 */
+        host_frame();
+        host_press(B_SEQ, 0);
+        host_frame();
+        check("SEQ tapped with no pad: TAPE 2 -> TAPE", ui.page == PG_TAPE);
+        {
+            int32_t sp0 = tape.nudge;
+            turn(EN_ALGO, 2);
+            host_render(buf, CTL);
+            check("ALGORITHM on TAPE: a push on the reel (SPEED nudged), the engine kept", cur.engine == ENG_SAW &&
+                  tape.nudge > sp0);
+        }
+    }
+    {   /* HARSH <-> SHOEGAZE from GLO: its own bank, colours, FX page */
+        uint16_t theme0;
+        ui_page(PG_GLO);
+        host_frame();
+        theme0 = T_THEME;
+        turn(EN_K4, 1);
+        check("GLO KNOB 4: SHOEGAZE, its toast, its colours", set.g[G_MODE] == MODE_SHOE && str_eq(ui.toast, "SHOEGAZE") &&
+              T_THEME != theme0);
+        check("... its sound loaded from its own bank", memcmp(&cur, &bank.s[set.g[G_SLOT]], sizeof cur) == 0);
+        ui_page(PG_FX);
+        host_frame();
+        host_png("build/shots/fx_shoe.png");
+        check("SHOEGAZE FX: the pedals are CHORUS and REVERB", cell(PG_FX, 1) == P_CHORUS && cell(PG_FX, 2) == P_REVERB);
+        ui_page(PG_GLO);
+        turn(EN_K4, -1);
+        check("... and back: HARSH, its colours", set.g[G_MODE] == MODE_HARSH && T_THEME == theme0);
+    }
 
     /* the SAVE dialog */
     erases = host_erases;
@@ -1551,6 +1642,14 @@ static void delay_audio(void)
         dly_run(dl_in, 88200, dl_out);
         r2 = pitch(dl_out + 2u * 20000u, 20000);
         check("GRAINS REVERSE 100: a sine reversed is the same sine (440 Hz +-8)", r2 > 432.0 && r2 < 448.0);
+        {
+            int neg = 0, pos = 0, j;
+            for (j = 0; j < (int)DL_NG; j++) {          /* (what the screen is told: a backwards grain has a negative window) */
+                neg += dl.gp_w[j] < 0;
+                pos += dl.gp_w[j] > 0;
+            }
+            check("GRAINS REVERSE 100: the screen's windows are negative (backwards), none forwards", neg > 0 && pos == 0);
+        }
 
         dly_setup(45, 0, 0, 1, 0, 0);                          /* +12 st only: GRAIN PITCH 25 is {0, +12} */
         set.g[G_GMIX] = 100;
@@ -1977,6 +2076,27 @@ static void scl_audio(void)
     tap_key(0);
     host_render(buf, BLOCKS(FS));
     check("... and one key releases all four", n_held() == 0);
+    {   /* every chord's shape over A (57), the notes it must latch (the voices are four at most) */
+        static const struct { int16_t ch; uint8_t n, v[4]; const char *name; } CH[] = {
+            {2, 3, {57, 64, 69, 0}, "POWER+8"},     {3, 3, {57, 62, 64, 0}, "SUS4"},   {4, 3, {57, 60, 64, 0}, "MINOR"},
+            {5, 2, {57, 63, 0, 0}, "TRITONE"},      {6, 4, {57, 64, 69, 76}, "DOOM"},  {7, 3, {57, 69, 81, 0}, "OCTAVES"},
+        };
+        uint32_t c, j;
+        set.g[G_LOW] = 0;
+        for (c = 0; c < sizeof CH / sizeof CH[0]; c++) {
+            char nm[40];
+            set.g[G_CHORD] = CH[c].ch;
+            tap_key(0);
+            ok = n_held() == CH[c].n;
+            for (j = 0; j < CH[c].n; j++)
+                ok &= has_note(CH[c].v[j]);
+            str_cpy(nm, CH[c].name, sizeof nm);
+            str_cat(nm, " on A: exactly its notes", sizeof nm);
+            check(nm, ok);
+            tap_key(0);
+            host_render(buf, BLOCKS(FS));
+        }
+    }
     set.g[G_CHORD] = 0;
     set.g[G_LOW] = 2;
     tap_key(0);

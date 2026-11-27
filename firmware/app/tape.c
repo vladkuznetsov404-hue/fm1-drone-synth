@@ -48,7 +48,7 @@ enum { TE_REC = 1, TE_PLAY, TE_ERASE, TE_NUDGE_UP, TE_NUDGE_DOWN };
 enum { PD_REV, PD_HALF, PD_DOUBLE, PD_STOP, PD_ST8, PD_ST16, PD_ST32, PD_FREEZE, PD_CHEW, PD_UP, PD_DOWN, PD_FIFTH,
        PD_SKIP, PD_RESTART, PD_ECHO, NPAD };
 static const char *const PAD_NAME[NPAD] = {"REV", "HALF", "DOUBLE", "STOP", "STUT 8", "STUT 16", "STUT 32", "FREEZE",
-                                           "CHEW", "+12", "-12", "+7", "SKIP", "RESTART", "ECHO HOLD"};
+                                           "CHEW", "+12", "-12", "+7", "SKIP", "RESTART", "ECHO"};
 /* 2^(k / 12) in Q16, k = -24 .. +24 */
 static const int32_t TAPE_PR[49] = {16384, 17358, 18390, 19484, 20643, 21870, 23170, 24548, 26008, 27554, 29193, 30929,
     32768, 34716, 36781, 38968, 41285, 43740, 46341, 49097, 52016, 55109, 58386, 61858, 65536, 69433, 73562, 77936,

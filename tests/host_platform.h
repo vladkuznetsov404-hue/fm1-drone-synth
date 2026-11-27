@@ -98,13 +98,25 @@ static void lcd_blit(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint1
  * (the app's screens must keep it 0; host_clip_what names the last one) */
 static uint32_t host_clipped;
 static const char *host_clip_what;
+static char host_clip_buf[48];
+static int host_clip_box[6];
 static uint32_t cv_w, cv_h;
+static void host_clip_note(const char *s, int x0, int y0, int x1, int y1)
+{
+    unsigned i = 0;
+    for (; s && s[i] && i < sizeof host_clip_buf - 1u; i++)
+        host_clip_buf[i] = s[i];
+    host_clip_buf[i] = 0;
+    host_clip_what = host_clip_buf;
+    host_clip_box[0] = x0; host_clip_box[1] = y0; host_clip_box[2] = x1; host_clip_box[3] = y1;
+    host_clip_box[4] = (int)cv_w; host_clip_box[5] = (int)cv_h;
+}
 #define GFX_HOOK_TEXT(x0, y0, x1, y1, s, flags) \
     ((x0) < 0 || (y0) < 0 || (uint32_t)(x1) > cv_w || (uint32_t)(y1) > cv_h || ((flags) & 2u) \
-         ? (void)(host_clipped++, host_clip_what = (s)) : (void)0)
+         ? (void)(host_clipped++, host_clip_note((s), (x0), (y0), (x1), (y1))) : (void)0)
 #define GFX_HOOK_CELL(x0, y0, x1, y1) \
     ((x0) < 0 || (y0) < 0 || (uint32_t)(x1) > cv_w || (uint32_t)(y1) > cv_h \
-         ? (void)(host_clipped++, host_clip_what = "a cell") : (void)0)
+         ? (void)(host_clipped++, host_clip_note("a cell", (x0), (y0), (x1), (y1))) : (void)0)
 #define GFX_HOOK_BLIT(x, y, r0) ((void)0)
 #define GFX_HOOK_BEGIN() ((void)0)
 #define GFX_HOOK_PIXELS(n) ((void)0)

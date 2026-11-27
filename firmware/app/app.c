@@ -28,13 +28,15 @@
 #include "delay.c"
 #include "sound.c"
 #include "scenes.c"
+#include "scenes2.c"
 #include "ui.c"
 
-static void app_palette(void)                    /* MASSA's palette (tools/gen_ui_palettes.py), by name */
+static void app_palette(void)                    /* MASSA's or SHOEGAZE's palette (tools/gen_ui_palettes.py), by name */
 {
     uint32_t i;
+    const char *name = set.g[G_MODE] == MODE_SHOE ? "SHOEGAZE" : "MASSA";
     for (i = 0; i < NPALETTES; i++)
-        if (str_eq(UI_PALETTES[i].name, "MASSA")) {
+        if (str_eq(UI_PALETTES[i].name, name)) {
             palette_set(i);
             return;
         }

@@ -248,7 +248,7 @@ static void dly_process(int32_t *out, uint32_t n)
         for (j = 0; j < DL_NG; j++) {
             uint32_t u = gr[j].ph >> 16;
             dl.gp_gap[j] = ((dl.gmask >> j) & 1u) ? (int16_t)(((te - gr[j].pos) >> 16) & DL_MASK) : 0;
-            dl.gp_w[j] = ((dl.gmask >> j) & 1u) ? (int16_t)((u < 32768u ? u : 65535u - u) >> 7) : 0;
+            dl.gp_w[j] = ((dl.gmask >> j) & 1u) ? (int16_t)(((u < 32768u ? u : 65535u - u) >> 7) + 1u) * (gr[j].step < 0 ? -1 : 1) : 0;   /* (+ 1: a grain just born is live; < 0: backwards) */
         }
     } else
         for (j = 0; j < DL_NG; j++)

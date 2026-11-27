@@ -2,15 +2,18 @@
  * Copyright (C) 2026 Vlad Kuznetsov */
 /* The surface (main loop): the controls table of docs/SPEC.md, the pages, the SAVE dialog, the LEDs.
  *
- * Every page is the same frame: a header (page, engine, octave), the sound line (slot, name, * when edited; a
- * short message in its place for 1.5 s), four rows for KNOB 1..4 (label, value, a bar), and the held notes and the
- * tape. HOME puts the held notes large over a picture of the drone's wave (~10 a second, sound.c's scope) and the
- * tape with its bar above four compact macro rows. A value that does
- * not reach the sound yet carries a dim SOON next to its label (ui_live); a milestone that wires one removes it.
+ * Two kinds of page. The plain ones (EDIT, ENV, LFO, GLO) are a header (page, mode, engine, octave), the sound line
+ * (slot, name, * when edited; a short message in its place for 1.5 s), four rows for KNOB 1..4 (label, value, a bar),
+ * and the held notes and the tape. The rest show a picture that moves with the sound and the knobs (scenes.c,
+ * scenes2.c) with the four knobs as a strip of dials under it (the amp has its own knobs in the picture): FX, SCL,
+ * DELAY 1..4, TAPE 1..2. HOME is the black hole over the sound line, the tape's line and the four macro dials.
+ * SCL: a tap opens the scale page, held 0.8 s it silences every note. SEQ held: the keys are the cassette's pads.
+ * A value that does not reach the sound yet carries a dim SOON next to its label (ui_live): none now.
  *
  * Lazy drawing: each area has a signature of what it shows (area_sig) and is drawn only when that changes; a page
  * change or app_redraw clears the screen and draws everything. */
-enum { PG_HOME, PG_EDIT, PG_FX, PG_ENV, PG_LFO, PG_DELAY, PG_DELAY2, PG_TAPE, PG_TAPE2, PG_GLO, NPG };   /* SELECT's order */
+enum { PG_HOME, PG_EDIT, PG_FX, PG_ENV, PG_LFO, PG_SCL, PG_DELAY, PG_DELAY2, PG_DELAY3, PG_DELAY4, PG_TAPE, PG_TAPE2, PG_GLO,
+       NPG };   /* SELECT's order */
 enum { A_HEAD, A_SOUND, A_R0, A_R1, A_R2, A_R3, A_NOTES, A_TAPE, A_SCENE, A_DIALS, NA };
 
 #define C_BLANK (-1)             /* a row with nothing on it */
@@ -24,45 +27,45 @@ static const int16_t CELLS[NPG][4] = {
     [PG_FX] = {P_DRIVE, P_TONE, P_CAB, P_LEVEL},
     [PG_ENV] = {P_ATTACK, P_RELEASE, C_BLANK, C_BLANK},
     [PG_LFO] = {P_RATE, P_TOPITCH, P_TOCUT, P_TOLEVEL},
+    [PG_SCL] = {C_G + G_SCALE, C_G + G_ROOT, C_G + G_CHORD, C_G + G_LOW},
     [PG_DELAY] = {C_G + G_DT, C_G + G_DFB, C_G + G_DMIX, C_G + G_DHEADS},
-    [PG_DELAY2] = {C_G + G_DWOB, C_G + G_DDULL, C_BLANK, C_BLANK},
-    [PG_TAPE] = {C_G + G_SPEED, C_G + G_DIR, C_G + G_DECAY, C_G + G_WEAR},
-    [PG_TAPE2] = {C_G + G_BRAKE, C_BLANK, C_BLANK, C_BLANK},
-    [PG_GLO] = {C_G + G_CH, C_G + G_TRS, C_G + G_VOL, C_VER},
+    [PG_DELAY2] = {C_G + G_DWOB, C_G + G_DDULL, C_G + G_DGLIDE, C_G + G_DDRV},
+    [PG_DELAY3] = {C_G + G_GMIX, C_G + G_GSIZE, C_G + G_GDENS, C_G + G_GPITCH},
+    [PG_DELAY4] = {C_G + G_GSCAT, C_G + G_GREV, C_G + G_GFB, C_BLANK},
+    [PG_TAPE] = {C_G + G_SPEED, C_G + G_PITCH, C_G + G_DECAY, C_G + G_WEAR},
+    [PG_TAPE2] = {C_G + G_BRAKE, C_G + G_DIR, C_G + G_LOCK, C_G + G_DROP},
+    [PG_GLO] = {C_G + G_CH, C_G + G_TRS, C_G + G_VOL, C_G + G_MODE},
 };
 static const int16_t CELLS_FM[4] = {P_RATIO, P_FB, P_INDEX, P_SUB};
-static const char *const PG_TITLE[NPG] = {"HOME", "EDIT", "FX", "ENV", "LFO", "DELAY", "DELAY 2", "TAPE", "TAPE 2", "GLO"};
+static const int16_t CELLS_SHOE_FX[4] = {P_DRIVE, P_CHORUS, P_REVERB, P_LEVEL};   /* SHOEGAZE's FX */
+static const char *const PG_TITLE[NPG] = {"HOME", "EDIT", "FX", "ENV", "LFO", "SCL", "DELAY", "DELAY 2", "DELAY 3",
+                                          "DELAY 4", "TAPE", "TAPE 2", "GLO"};
 static const uint8_t HEAD_ORDER[7] = {1, 2, 4, 3, 5, 6, 7};   /* HEADS as the knob steps through it: one head, two, three */
 
-static int page_scene(uint32_t p) { return p == PG_FX || p == PG_DELAY || p == PG_DELAY2; }   /* a picture, a strip of dials */
+static void app_palette(void);
+
+static int page_scene(uint32_t p) { return p == PG_FX || p == PG_SCL || (p >= PG_DELAY && p <= PG_TAPE2); }   /* a picture */
+static int page_strip(uint32_t p) { return page_scene(p) && p != PG_FX; }    /* ... and a strip of dials (not FX: the amp's own) */
+static int page_delay(uint32_t p) { return p >= PG_DELAY && p <= PG_DELAY4; }
 
 static struct {
     uint8_t page, dlg, dlg_slot, full;
     int8_t saved;                /* the last SAVE: 1 saved, -1 failed, 0 none yet */
     uint32_t last_buttons, rec_down, toast_until;
     uint8_t rec_held, rec_used;
+    uint32_t scl_down, seq_pads_prev;   /* SCL's press time; the pads at the last frame */
+    uint8_t scl_used, seq_down, seq_used;
     const char *toast;
     uint32_t scope_t;            /* when the last picture of the drone was shown (fm1_ms) */
     uint32_t drawn[NA], dlg_drawn;
 } ui;
 
-static int ui_live(int32_t code)                 /* does this value reach the sound yet (no SOON tag) */
-{
-    return code == P_ATTACK || code == P_RELEASE || code == C_G + G_CH || code == C_G + G_TRS ||
-           code == C_G + G_VOL || code == P_BEATS || code == P_LAYERS || code == P_SUB || code == P_SUBOCT ||
-           code == P_CURVE ||                   /* (milestone 2: the SAW engine) */
-           code == P_MASSA || code == P_DARK || code == P_DRIVE || code == P_TONE || code == P_CAB ||
-           code == P_LEVEL ||                   /* (milestone 3: the fuzz, the cabinet, DARK) */
-           code == P_BREATH || code == P_RATE || code == P_TOPITCH || code == P_TOCUT ||
-           code == P_TOLEVEL ||                 /* (milestone 4: BREATH) */
-           code == C_G + G_SPEED || code == C_G + G_DIR || code == C_G + G_DECAY || code == C_G + G_WEAR ||
-           code == C_G + G_BRAKE ||             /* (milestones 6, 7: the cassette) */
-           code == P_RATIO || code == P_FB || code == P_INDEX ||   /* (milestone 5: FM) */
-           (code >= C_G + G_DT && code <= C_G + G_DDULL);   /* (the tape echo) */
-}
+static int ui_live(int32_t code) { (void)code; return 1; }   /* every value reaches the sound now */
 
 static int32_t cell(uint32_t page, uint32_t i)
 {
+    if (page == PG_FX && set.g[G_MODE] == MODE_SHOE)
+        return CELLS_SHOE_FX[i];
     return page == PG_EDIT && cur.engine == ENG_FM ? CELLS_FM[i] : CELLS[page][i];
 }
 
@@ -106,13 +109,62 @@ static uint32_t held_sig(void)
     return h;
 }
 
+static uint32_t scene_sig(uint32_t h)            /* what the page's picture shows */
+{
+    uint32_t i;
+    switch (ui.page) {
+    case PG_HOME:                                /* the hole breathes: a new picture every ~80 ms */
+        h = h_add(h, fm1_ms / 80u);
+        h = h_add(h, scope.count);
+        for (i = 0; i < 4u; i++)
+            h = h_add(h, (uint32_t)cur.p[CELLS[PG_HOME][i]]);
+        h = h_add(h, held_sig());
+        h = h_add(h, (uint32_t)set.g[G_MODE]);
+        break;
+    case PG_FX:
+        h = h_add(h, fm1_ms / 90u);
+        h = h_add(h, scope.count);
+        for (i = 0; i < 4u; i++)
+            h = h_add(h, (uint32_t)cur.p[cell(PG_FX, i)]);
+        h = h_add(h, (uint32_t)set.g[G_MODE]);
+        break;
+    case PG_SCL:                                 /* static: only when a value or a note changes */
+        for (i = 0; i < 4u; i++)
+            h = h_add(h, (uint32_t)set.g[CELLS[PG_SCL][i] - C_G]);
+        h = h_add(h, held_sig());
+        h = h_add(h, (uint32_t)set.g[G_OCT]);
+        break;
+    case PG_DELAY: case PG_DELAY2: case PG_DELAY3: case PG_DELAY4:   /* the tape moves: a new picture every ~70 ms */
+        h = h_add(h, fm1_ms / 70u);
+        for (i = G_DT; i <= G_DDULL; i++)
+            h = h_add(h, (uint32_t)set.g[i]);
+        for (i = G_DGLIDE; i <= G_GFB; i++)
+            h = h_add(h, (uint32_t)set.g[i]);
+        break;
+    case PG_TAPE:
+        h = h_add(h, fm1_ms / 70u);
+        h = h_add(h, tape.st);
+        h = h_add(h, tape.pads);
+        for (i = 0; i < 4u; i++)
+            h = h_add(h, (uint32_t)set.g[CELLS[PG_TAPE][i] - C_G]);
+        break;
+    case PG_TAPE2:
+        h = h_add(h, tape.pads);
+        h = h_add(h, dl.freeze);
+        break;
+    }
+    return h;
+}
+
 static uint32_t area_sig(uint32_t a)
 {
     uint32_t h = h_add(2166136261u, a << 8 | ui.page), i;
+    int plain = !page_scene(ui.page) && ui.page != PG_HOME;
     switch (a) {
     case A_HEAD:
         h = h_add(h, cur.engine);
         h = h_add(h, (uint32_t)set.g[G_OCT]);
+        h = h_add(h, (uint32_t)set.g[G_MODE]);
         if (page_scene(ui.page)) {               /* (no sound line here: its message and * go in the header) */
             h = h_add(h, (uint32_t)snd_dirty());
             if (toast_on())
@@ -132,7 +184,7 @@ static uint32_t area_sig(uint32_t a)
         break;
     case A_R0: case A_R1: case A_R2: case A_R3: {
         int32_t c;
-        if (page_scene(ui.page))
+        if (!plain)
             return h;
         c = cell(ui.page, a - A_R0);
         h = h_add(h, (uint32_t)c);
@@ -140,30 +192,25 @@ static uint32_t area_sig(uint32_t a)
         break;
     }
     case A_NOTES:
+        if (ui.page == PG_HOME)                  /* (the notes are in the picture) */
+            return h;
         h = h_add(h, held_sig());
-        if (ui.page != PG_HOME)
-            h = h_add(h, tape.st);
-        else
-            h = h_add(h, scope.count);           /* a new picture of the drone */
+        h = h_add(h, tape.st);
         break;
     case A_TAPE:
+        if (ui.page != PG_HOME)
+            return h;
         h = h_add(h, tape.st);
         h = h_add(h, tape_pct());
         break;
     case A_SCENE:
-        if (ui.page == PG_DELAY || ui.page == PG_DELAY2) {   /* the tape moves: a new picture every ~70 ms */
-            h = h_add(h, fm1_ms / 70u);
-            for (i = G_DT; i <= G_DDULL; i++)
-                h = h_add(h, (uint32_t)set.g[i]);
-        } else if (ui.page == PG_FX) {
-            h = h_add(h, scope.count);
-            for (i = P_DRIVE; i <= P_LEVEL; i++)
-                h = h_add(h, (uint32_t)cur.p[i]);
-            h = h_add(h, (uint32_t)cur.p[P_MASSA]);
-        }
+        if (page_scene(ui.page) || ui.page == PG_HOME)
+            h = scene_sig(h);
         break;
     case A_DIALS:
-        if (page_scene(ui.page))
+        if (ui.page == PG_FX)
+            return scene_sig(h);                 /* the speakers (or the scope) under the amp's knobs */
+        if (page_strip(ui.page) || ui.page == PG_HOME)
             for (i = 0; i < 4u; i++) {
                 int32_t c = cell(ui.page, i);
                 h = h_add(h, (uint32_t)c);
@@ -191,12 +238,17 @@ static void draw_head(uint32_t y)
         str_cat(b, cur.engine == ENG_FM ? " FM" : " SAW", sizeof b);
     if (page_scene(ui.page) && snd_dirty())
         str_cat(b, " *", sizeof b);
-    cv_text(8, 4, &AF_M, b, T_ACCENT);
+    if (ui.page == PG_GLO) {                     /* (the version has no row of its own any more) */
+        str_cat(b, " ", sizeof b);
+        str_cat(b, APP_VERSION, sizeof b);
+    }
+    x = cv_text(8, 4, &AF_M, b, T_ACCENT);
+    cv_text(8 + text_w(&AF_M, b) + 8, 6, &AF_S, set.g[G_MODE] ? "SHOE" : "HARSH", T_MID);
     str_cpy(b, "OCT ", sizeof b);
     par_text(b + 4, sizeof b - 4u, set.g[G_OCT], F_OCT);
     x = cv_text_r(232, 6, &AF_S, b, T_MID, T_BG);
     (void)x;
-    cv_text_r(232 - text_w(&AF_S, b) - 12, 6, &AF_S, cur.engine == ENG_FM ? "FM" : "SAW", T_THEME, T_BG);
+    cv_text_r(232 - text_w(&AF_S, b) - 10, 6, &AF_S, cur.engine == ENG_FM ? "FM" : "SAW", T_THEME, T_BG);
     cv_rect(0, 23, 240, 1, T_LINE);
     cv_blit(0, y);
 }
@@ -268,45 +320,6 @@ static void held_notes(uint8_t *n)               /* the latched notes, in voice 
         n[i] = snd.held[i];
 }
 
-static void draw_notes_big(uint32_t y)           /* HOME: the held notes, large */
-{
-    uint8_t n[NV];
-    char b[8];
-    uint32_t i;
-    held_notes(n);
-    cv_begin(240, 50, T_BG);
-    if (scope.count) {                           /* the drone's wave behind the notes, scaled to +-22 px of its peak */
-        int32_t m = 64, a, y0 = 25, y1;
-        for (i = 0; i < SCOPE_N; i++) {
-            a = scope.y[i] < 0 ? -scope.y[i] : scope.y[i];
-            m = a > m ? a : m;
-        }
-        for (i = 0; i < SCOPE_N; i++) {
-            y1 = 25 - scope.y[i] * 22 / m;
-            if (i)
-                cv_line((int32_t)i - 1, y0, (int32_t)i, y1, T_TINT);
-            y0 = y1;
-        }
-    }
-    for (i = 0; i < NV; i++) {
-        const aafont_t *f = &AF_L;
-        if (!n[i]) {
-            cv_text_in((int32_t)i * 60, 12, 60, &AF_L, "-", T_DIM, T_BG);
-            continue;
-        }
-        note_name(b, n[i]);
-        if (text_w(f, b) > 58)
-            f = &AF_M;
-        cv_text_in((int32_t)i * 60, f == &AF_L ? 12 : 18, 60, f, b, T_THEME, T_BG);
-    }
-    cv_blit(0, y);
-}
-
-static uint16_t tape_col(void)
-{
-    return tape.st == TP_REC || tape.st == TP_DUB ? T_REC : tape.st == TP_PLAY ? T_THEME : T_MID;
-}
-
 #define TB_X 122                 /* HOME's tape line: TAPE, the state (EMPTY the widest, from x 40), the bar */
 #define TB_W 64
 
@@ -363,10 +376,13 @@ static int32_t dial_at(int32_t code)             /* the knob's pointer: 0 .. 32 
 
 static const char *dial_label(int32_t code)      /* the strip's cell is 60 px: FUZZ DRIVE and FUZZ TONE are DRIVE and TONE */
 {
-    return code == P_DRIVE ? "DRIVE" : code == P_TONE ? "TONE" : cell_par(code)->label;
+    return code == P_DRIVE ? "DRIVE" : code == P_TONE ? "TONE" : code == C_G + G_DDRV ? "DRIVE" :
+           code == C_G + G_GPITCH ? "PITCH" : code == C_G + G_GFB ? "FEEDBACK" : code == C_G + G_DGLIDE ? "GLIDE" :
+           code == C_G + G_DIR ? "DIR" : code == C_G + G_LOW ? "LOW" :
+           cell_par(code)->label;
 }
 
-static void draw_dials(uint32_t y)               /* a scene page's four knobs: label, dial, value */
+static void draw_dials(uint32_t y)               /* a scene page's four knobs (and HOME's macros): label, dial, value */
 {
     char val[24];
     uint32_t i;
@@ -392,32 +408,44 @@ static void draw_area(uint32_t a)
             draw_sound(24);
         break;
     case A_SCENE:
-        if (ui.page == PG_FX)
-            sc_amp(26);
-        else if (ui.page == PG_DELAY || ui.page == PG_DELAY2)
-            sc_delay(26);
+        switch (ui.page) {
+        case PG_HOME: sc_hole(48); break;
+        case PG_FX:
+            if (set.g[G_MODE] == MODE_SHOE)
+                sc_pedals(26);
+            else
+                sc_amp(26);
+            break;
+        case PG_SCL: sc_scl(26); break;
+        case PG_DELAY: case PG_DELAY2: sc_delay(26); break;
+        case PG_DELAY3: case PG_DELAY4: sc_grains(26); break;
+        case PG_TAPE: sc_cassette(26); break;
+        case PG_TAPE2: sc_pads(26); break;
+        }
         break;
     case A_DIALS:
-        if (page_scene(ui.page))
+        if (ui.page == PG_FX) {
+            if (set.g[G_MODE] == MODE_SHOE)
+                sc_pedals_low(150);
+            else
+                sc_amp_low(150);
+        } else if (home)
+            draw_dials(178);
+        else if (page_strip(ui.page))
             draw_dials(152);
         break;
     case A_R0: case A_R1: case A_R2: case A_R3:
-        if (page_scene(ui.page))
+        if (page_scene(ui.page) || home)
             break;
-        if (home)
-            draw_row(128u + (a - A_R0) * 28u, 28, cell(ui.page, a - A_R0), a - A_R0);
-        else
-            draw_row(52u + (a - A_R0) * 40u, 40, cell(ui.page, a - A_R0), a - A_R0);
+        draw_row(52u + (a - A_R0) * 40u, 40, cell(ui.page, a - A_R0), a - A_R0);
         break;
     case A_NOTES:
-        if (home)
-            draw_notes_big(50);
-        else
+        if (!home)
             draw_foot(214);
         break;
     case A_TAPE:
         if (home)
-            draw_tape(102);
+            draw_tape(152);
         break;
     }
 }
@@ -492,32 +520,35 @@ static void ui_page(uint32_t p)
 
 static void ui_leds(void)
 {
-    static const uint8_t PAGE_BTN[NPG] = {B_HOME, B_EDIT, B_FX, B_ENV, B_LFO, B_ARP, B_ARP, B_SEQ, B_SEQ, B_GLO};
+    static const uint8_t PAGE_BTN[NPG] = {B_HOME, B_EDIT, B_FX, B_ENV, B_LFO, B_SCL, B_ARP, B_ARP, B_ARP, B_ARP, B_SEQ, B_SEQ, B_GLO};
     uint32_t i, on[NB] = {0}, keys = 0;
-    int32_t base = (int32_t)NOTE_KEY0 + 12 * set.g[G_OCT];
     on[PAGE_BTN[ui.page]] = !ui.dlg;
     on[B_SAVE] = ui.dlg;
     on[B_REC] = tape.st == TP_REC || tape.st == TP_DUB;
     on[B_PLAY] = tape.st == TP_PLAY || tape.st == TP_DUB;
     on[B_OCTDN] = set.g[G_OCT] < 0;
     on[B_OCTUP] = set.g[G_OCT] > 0;
-    on[B_SCL] = panel_held(B_SCL);
+    on[B_SEQ] = on[B_SEQ] || ui.seq_down;       /* (held: the keys are pads) */
     for (i = 0; i < NB; i++)
         fm1_led_key(panel.btn[i], (int)on[i]);
     for (i = 0; i < NV; i++) {
-        int32_t k = (int32_t)snd.held[i] - base;
-        if (snd.held[i] && k >= 0 && k < 27)
+        int32_t k = snd.held[i] ? note_key(snd.held[i]) : -1;
+        if (k >= 0)
             keys |= 1u << k;
     }
+    if (ui.seq_down)                             /* pads: the keys that are on show, like the pad legend */
+        keys = (tape.pads & 0x3FFFu) | (dl.freeze ? 1u << PD_ECHO : 0u);
     for (i = 0; i < 27u; i++)
         fm1_led_key(14u + i, (int)((keys >> i) & 1u));
 }
 
 static void ui_frame(void)
 {
-    uint32_t b = fm1_in.buttons, pr = b & ~ui.last_buttons, i;
+    uint32_t b = fm1_in.buttons, pr = b & ~ui.last_buttons, rl = ~b & ui.last_buttons, i;
+    uint8_t mode0 = (uint8_t)set.g[G_MODE];
     int32_t sel = panel_enc(EN_SELECT), alg = panel_enc(EN_ALGO), pre = panel_enc(EN_PRESET), k[4];
 #define PRESSED(x) (pr & panel_mask(x))
+#define RELEASED(x) (rl & panel_mask(x))
     ui.last_buttons = b;
     for (i = 0; i < 4u; i++)
         k[i] = panel_enc(EN_K1 + i);
@@ -528,6 +559,15 @@ static void ui_frame(void)
         ui.scope_t = fm1_ms;
     } else if ((ui.page == PG_HOME || ui.page == PG_FX) && !scope.req && fm1_ms - ui.scope_t >= 100u)
         scope.req = 1;
+    if (ui.seq_down) {                           /* SEQ held: the keys are the cassette's pads, the first 15 */
+        uint32_t pads = fm1_in.notes & 0x7FFFu, rise = pads & ~ui.seq_pads_prev;
+        if (rise)
+            ui.seq_used = 1;
+        if (rise & (1u << PD_ECHO))              /* the echo's freeze: a latch */
+            dl.freeze = (uint8_t)!dl.freeze;
+        ui.seq_pads_prev = pads;
+        tape_pads(pads);
+    }
 
     if (ui.dlg) {                                /* the SAVE dialog takes SAVE / OCT+, OCT-, PRESETS */
         if (pre)
@@ -552,18 +592,45 @@ static void ui_frame(void)
     if (PRESSED(B_ENV)) ui_page(PG_ENV);
     if (PRESSED(B_LFO)) ui_page(PG_LFO);
     if (PRESSED(B_GLO)) ui_page(PG_GLO);
-    if (PRESSED(B_SEQ)) ui_page(ui.page == PG_TAPE ? PG_TAPE2 : PG_TAPE);
-    if (PRESSED(B_ARP)) ui_page(ui.page == PG_DELAY ? PG_DELAY2 : PG_DELAY);
+    if (PRESSED(B_SEQ)) {                        /* held: pads; let go with no pad played: the cassette's pages */
+        ui.seq_down = 1;
+        ui.seq_used = 0;
+        ui.seq_pads_prev = fm1_in.notes & 0x7FFFu;
+        snd.pad_mode = 1;
+    }
+    if (RELEASED(B_SEQ) && ui.seq_down) {
+        ui.seq_down = 0;
+        snd.pad_mode = 0;
+        tape_pads(0);
+        if (!ui.seq_used)
+            ui_page(ui.page == PG_TAPE ? PG_TAPE2 : PG_TAPE);
+    }
+    if (PRESSED(B_ARP)) ui_page(page_delay(ui.page) ? (ui.page == PG_DELAY4 ? PG_DELAY : ui.page + 1u) : PG_DELAY);
     if (sel)
         ui_page((uint32_t)(((int32_t)ui.page + sel % NPG + NPG) % NPG));
     if (PRESSED(B_OCTDN)) set.g[G_OCT] = clamp16(set.g[G_OCT] - 1, GP[G_OCT].lo, GP[G_OCT].hi);
     if (PRESSED(B_OCTUP)) set.g[G_OCT] = clamp16(set.g[G_OCT] + 1, GP[G_OCT].lo, GP[G_OCT].hi);
-    if (PRESSED(B_SCL)) {
+    if (PRESSED(B_SCL)) {                        /* a tap: the scale page; held 0.8 s: every note off */
+        ui.scl_down = fm1_ms;
+        ui.scl_used = 0;
+    }
+    if (panel_held(B_SCL) && !ui.scl_used && fm1_ms - ui.scl_down >= 800u) {
+        ui.scl_used = 1;
         snd.silence_req = 1;
         toast("SILENCE");
     }
-    if (alg)
-        cur.engine = alg > 0 ? ENG_FM : ENG_SAW;
+    if (RELEASED(B_SCL) && !ui.scl_used)
+        ui_page(PG_SCL);
+    if (alg) {
+        if (ui.page == PG_TAPE || ui.page == PG_TAPE2) {   /* the tape's jog: a nudge of the speed (a push on the reel) */
+            int32_t n = alg > 3 ? 3 : alg < -3 ? -3 : alg;
+            for (; n > 0; n--)
+                tape_nudge(1);
+            for (; n < 0; n++)
+                tape_nudge(0);
+        } else
+            cur.engine = alg > 0 ? ENG_FM : ENG_SAW;
+    }
     if (pre) {
         int16_t s = clamp16(set.g[G_SLOT] + pre, 0, NSND - 1);
         set.g[G_SLOT] = s;
@@ -572,6 +639,12 @@ static void ui_frame(void)
     for (i = 0; i < 4u; i++)
         if (k[i])
             cell_add(cell(ui.page, i), k[i]);
+    if ((uint8_t)set.g[G_MODE] != mode0) {       /* HARSH <-> SHOEGAZE: its own sounds, its own colours */
+        cur = bank.s[set.g[G_SLOT]];
+        app_palette();
+        toast(set.g[G_MODE] ? "SHOEGAZE" : "HARSH");
+        ui.full = 1;
+    }
 
     if (PRESSED(B_REC)) {                        /* acts at once; held 1 s it erases (whatever the press did) */
         tape_rec();
@@ -590,6 +663,7 @@ static void ui_frame(void)
         ui.full = 1;
     }
 #undef PRESSED
+#undef RELEASED
     ui_leds();
     ui_draw();
 }

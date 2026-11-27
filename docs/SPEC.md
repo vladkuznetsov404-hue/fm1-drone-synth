@@ -7,6 +7,12 @@ hang forever, thick detuned layers that beat against each other, a fuzz and a 4�
 records the instrument's own output and plays it back with wow, flutter, wear, half speed, reverse and a tape-stop
 brake. It is a playing instrument (no step sequencer); the cassette is the only "sequencing". Kind: synthesizer.
 
+It has two **modes** (GLO, MODE): **HARSH** (the fuzz and the cabinet, the red palette) and **SHOEGAZE** (a softer
+fuzz into a chorus and a reverb, a violet palette). Each mode has its own 16 sounds, its own FX page and its own
+colours; the cassette, the tape echo, the scales and the settings are shared. On top of the drone: a tape echo with
+a motor-driven TIME, a grain delay and a freeze; a cassette whose pitch is apart from its speed and that is played
+with 15 pads; scales and Sunn-style chords on the keys; a black hole on HOME that moves with the sound.
+
 ## Controls
 
 The FM-1 has 27 keys, 14 buttons (FX SCL ENV LFO EDIT GLO HOME SAVE ARP SEQ PLAY REC OCT− OCT+) and 7 encoders
@@ -22,25 +28,28 @@ The FM-1 has 27 keys, 14 buttons (FX SCL ENV LFO EDIT GLO HOME SAVE ARP SEQ PLAY
 | KNOB 3 | turn (HOME) | **DARK** 0..100: low-pass cutoff (100 = darkest). |
 | KNOB 4 | turn (HOME) | **BREATH** 0..100: depth (and a little rate) of the slow LFOs on cutoff, pitch and level. |
 | KNOB 1..4 | turn (other pages) | The four parameters of that page (see Screens). |
-| SELECT | turn | Next / previous page (HOME, EDIT, FX, ENV, LFO, TAPE, TAPE 2, GLO), wrapping. |
-| ALGORITHM | turn | Engine: **SAW** (detuned saws + sub) or **FM** (feedback FM + sub). The switch crossfades, notes keep sounding. |
+| SELECT | turn | Next / previous page (HOME, EDIT, FX, ENV, LFO, SCL, DELAY 1..4, TAPE, TAPE 2, GLO), wrapping. |
+| ALGORITHM | turn | Engine: **SAW** (detuned saws + sub) or **FM** (feedback FM + sub). The switch crossfades, notes keep sounding. On the TAPE pages it is the **jog**: each click is a push on the reel (the speed leaps ±12.5 % and settles back). |
 | PRESETS | turn | Pick a sound slot 1..16 and load it (the held notes keep sounding with the new sound; unsaved edits of the sound before are dropped). |
 | HOME | press | HOME page. |
 | EDIT | press | EDIT page (engine). |
 | FX | press | FX page (fuzz, cabinet). |
 | ENV | press | ENV page (swell). |
 | LFO | press | LFO page (breath). |
-| SEQ | press | TAPE page; on TAPE: TAPE 2 (BRAKE), and back. |
+| SEQ | tap | TAPE page; on TAPE: TAPE 2, and back. |
+| SEQ | hold | **Pad mode**: the keys are the cassette's 15 pads (not notes) while SEQ is down; a SEQ press in which a pad was played does not change the page. Pads: 1 REV, 2 HALF, 3 DOUBLE, 4 STOP, 5..7 STUT 8 / 16 / 32, 8 FREEZE, 9 CHEW, 10 +12, 11 −12, 12 +7, 13 SKIP, 14 RESTART, 15 ECHO (latches the echo's freeze). Pads 1..14 act while held. |
 | GLO | press | GLO page (global settings). |
-| SCL | press | **Silence**: release every latched note (fade out). |
+| SCL | tap | The scale page (SCALE, ROOT, CHORD, LOW ROOT). |
+| SCL | hold 0.8 s | **Silence**: release every latched note (fade out); toast SILENCE. |
 | SAVE | press | Save dialog: the current sound into the slot shown (PRESETS picks it), confirm with SAVE again or OCT+, cancel with OCT−. |
 | REC | press | Cassette (acts at once): on an empty tape start recording (the first pass sets the loop length); while recording close the loop and play; while the tape plays toggle **overdub**; when stopped play with overdub. |
 | REC | hold 1 s | Erase the tape. |
 | PLAY | press | Cassette: play / stop (while recording: close the loop and play; on an empty tape: nothing). Stop runs the **tape brake** (the loop slows down to silence over the BRAKE time); play starts it again (spins up). |
-| ARP | press | The tape echo: DELAY page; again: DELAY 2. |
+| ARP | press | The tape echo: DELAY, and again DELAY 2, 3, 4, round. |
 
-LEDs: the current page's button (ARP for DELAY and DELAY 2, SEQ for TAPE and TAPE 2), SAVE while the dialog is open, REC while recording or
-overdubbing, PLAY while playing, OCT− below octave 0, OCT+ above it, SCL while held, the keys of the latched notes.
+LEDs: the current page's button (ARP for the four DELAY pages, SEQ for TAPE and TAPE 2, SCL for SCL), SAVE while the dialog is open, REC while
+recording or overdubbing, PLAY while playing, OCT− below octave 0, OCT+ above it, the keys of the latched notes (with a scale: the key
+of each note); while SEQ is held the keys show the pads that are on.
 
 ## Screens (240 × 240, dark)
 
@@ -49,7 +58,10 @@ Palette `MASSA` (tools/gen_ui_palettes.py): black background, a warm grey for te
 The platform's contrast checks (black text on an 80 % fill of the value colour needs 4.5:1) do not allow a value
 colour as dark as #8B0000. The name MASSA in the large font on the boot screen, until the first frame.
 
-A *picture page* (FX, DELAY, DELAY 2; more to come) has a different frame: a header (the page, `*` when edited, a
+The SHOEGAZE palette (`SHOEGAZE`, violet and a cool pale pink on black) replaces it with the mode; the header shows
+the mode next to the page title (HARSH / SHOE).
+
+A *picture page* (HOME, FX, SCL, DELAY 1..4, TAPE, TAPE 2) has a different frame: a header (the page, `*` when edited, a
 message in its place for 1.5 s), a 240 × 124 picture redrawn as it moves (~70 ms for the tape, ~100 ms for the amp),
 a strip of four dials (label, a knob with its pointer, the value) and the footer. The other pages:
 
@@ -58,27 +70,39 @@ Every page has the same frame: a header (page name; engine and octave on the rig
 for 1.5 s), four rows for KNOB 1..4 (number, label, value, a bar), and a footer with the latched notes and the tape's
 state. A value that does not reach the sound yet carries a dim SOON next to its label.
 
-- **HOME**: header and sound line; the latched notes large (four columns) over a live picture of the drone (built,
-  milestone 9): ~10 times a second the ISR captures ~22 ms of the output from a rising zero crossing (every 4th
-  sample, 240 points) and the screen draws it in the tint colour, scaled to its own peak, behind the note names;
-  only while HOME is shown. The cassette's state (EMPTY, REC, PLAY, DUB, STOP) with the loop position as a bar; the
-  four macro knobs MASSA, BEATS, DARK, BREATH as compact rows.
+- **HOME**: header and sound line; a 240 × 104 picture of **a black hole** that moves with the sound: the
+  waveform of the drone (the scope's captures, ~10 a second) bends the rim of the hole, stars are lensed round it,
+  halos and a ring pulse with the level, the held notes sit under it (in SHOEGAZE the core is a glow instead of a
+  shadow). Then the cassette's state (EMPTY, REC, PLAY, DUB, STOP) with the loop position as a bar, and the four macro
+  dials MASSA, BEATS, DARK, BREATH.
 - **EDIT** (engine): SAW: layers per note (1..3), sub level, sub octave (−1/−2), spread curve. FM: ratio, feedback,
   index, sub level.
-- **FX**: fuzz drive, fuzz tone, cabinet (off / 4×12 / dark), output level. A picture page (see below): a combo
-  amp with its four knobs, the scope of what comes out (the fuzz squares it as DRIVE goes up) and four speakers whose
-  cones move with the level; CAB changes what is drawn (bare cones, a grille, a denser grille).
+- **FX** (HARSH): fuzz drive, fuzz tone, cabinet (off / 4×12 / dark), output level. The combo is the control surface:
+  its four knobs and their values are the page's (no second strip), two valves glow and, with DRIVE, flame; the scope
+  of what comes out squares as DRIVE goes up; below, four speakers whose cones move with the level; CAB changes what
+  is drawn (bare cones, a grille, a denser grille). **FX** (SHOEGAZE): a pedalboard of FUZZ, CHORUS, REVERB and
+  LEVEL (four pedals with their knobs, an LED and a level meter each).
+- **SCL**: SCALE (CHROMATIC, MINOR, PHRYGIAN, LOCRIAN, HARM MINOR, PENT MINOR, WHOLE), ROOT (C..B), CHORD (SINGLE, POWER,
+  POWER+8, SUS4, MINOR, TRITONE, DOOM, OCTAVES), LOW ROOT (off, −1, −2 octaves). A picture: the twelve notes round a
+  wheel (the scale's notes lit, the root ringed, the chord's shape as a polygon, bright when it sounds), the scale's
+  note names, the chord's intervals, what is latched.
 - **ENV**: swell (attack 0..10 s), release 0..20 s, plus two free slots shown as "—".
 - **LFO**: breath rate (0.01..1 Hz), to pitch, to cutoff, to level.
 - **DELAY** (ARP): TIME (60..950 ms between the heads, quadratic), REPEATS, ECHO (mix, 0 = off: the default), HEADS
-  (1, 2, 3, 1+2, 1+3, 2+3, 1+2+3). **DELAY 2**: WOBBLE, DULL. A picture page: a loop of tape round two reels with
-  the record head and three playback heads. TIME moves the heads along the tape, the tape runs faster the shorter
-  the delay is, what is on the tape is the sound itself (the delay line's cells, on a log scale), and while TIME
-  glides the screen says SPINNING UP / SLOWING with head 1's pitch change.
-- **TAPE**: speed (½, 1, varispeed ½..1), direction (forward / reverse), decay per pass in overdub (0..100), wear
-  (wow, flutter, saturation and hiss together, 0..100).
-- **TAPE 2**: BRAKE time (0.2..4 s); three free rows.
-- **GLO**: MIDI channel (omni / 1..16), TRS MIDI IN on/off, master volume, a version line.
+  (1, 2, 3, 1+2, 1+3, 2+3, 1+2+3). **DELAY 2**: WOBBLE, DULL, GLIDE (the motor's speed), TAPE DRIVE (saturation in
+  the loop). **DELAY 3**: GRAINS (mix, 0 = off), SIZE (20..620 ms), DENSITY, GRAIN PITCH. **DELAY 4**: SCATTER,
+  REVERSE, GRAIN FEED (grains back into the line). A picture page: a loop of tape round two reels with the record
+  head, three playback heads and a dimension line that shows what TIME is (record head to head 1). The tape runs
+  faster the shorter the delay is, what is on the tape is the sound itself (the delay line's cells, on a log scale).
+  While TIME glides the heads show where it is *going* (ghosts), the bottom row says GOING TO <ms> and SPINNING UP /
+  SLOWING with head 1's pitch change. DELAY 3 and 4 show the grains moving over the line (a bar as tall as the
+  window is open, red when backwards) and where they may start (the SIZE .. SCATTER range).
+- **TAPE**: SPEED (½, 1, varispeed ½..1), PITCH (−12..+12 st), DECAY per pass in overdub (0..100), WEAR (wow, flutter,
+  saturation and hiss together, 0..100). A picture: a cassette with two reels that turn at the tape's speed, its state
+  and position. **TAPE 2**: BRAKE time (0.2..4 s), DIRECTION (forward / reverse), LOCK (on: SPEED changes the time
+  only, the pitch stays), DROPOUT (0..100, how often the tape drops out). A picture: the 15 pads (see SEQ), lit while on.
+- **GLO**: MIDI channel (omni / 1..16), TRS MIDI IN on/off, master volume, **MODE** (HARSH / SHOEGAZE: switching loads the
+  mode's own sound in the current slot, its colours and its FX page), a version line (in the title).
 - **SAVE** dialog: SAVE, the target slot and the name now in it, the keys (SAVE / OCT+ yes, OCT− no, PRESETS another
   slot); knobs and other buttons do nothing while it is open.
 
@@ -108,6 +132,12 @@ Each page draws only what changed (the platform's lazy drawing).
   low-pass at 4.2 kHz and +5 dB at 110 Hz; 4×12 dark: 2.3 kHz and +6 dB at 100 Hz; three biquads) → **DARK** (two
   one-poles, 12 dB/oct, 12 kHz at 0 down to 150 Hz at 100, even steps in pitch) → the cassette. MASSA also lifts the
   sub by up to 60 %. After ~0.19 s of silent voices the chain is cleared and outputs exact zero.
+- **SHOEGAZE** (`shoe.c`, after the chain above; HARSH drops it): a **chorus** (a 2048-sample line, two taps of
+  ~16 and 20 ms swung at 0.55 and 0.83 Hz, depth 20 + 3·CHORUS samples, mixed up to one half) into a **reverb**
+  (Freeverb-lite: four combs of 1116, 1188, 1277 and 1356 samples with a one-pole damping, two all-passes of 556 and
+  441, feedback 0.75 + REVERB/546, wet up to 0.55 × REVERB/100). It comes after the fuzz, the cabinet and DARK, so the
+  FX page's DRIVE and LEVEL still work as before (CAB and TONE keep the sound's values, not shown on that page). Its own quiet test clears both after 0.5 s of silence. 16 KB of the pool. The sound's values CHORUS and
+  REVERB are stored with it.
 - **Breath** (milestone 4, built: `breath.c`): three slow LFOs (parabolic sines) at RATE, ×1.375 and ×0.75 (they
   line up only every ~11 cycles), on the pitch (±8 cents), the DARK cutoff (±25 steps) and the level (±1.5 dB), each
   weighed by its TO value; BREATH is the depth of all three and nudges the rate up to +20 %. Worked out once per
@@ -138,6 +168,15 @@ posts the buttons and shows the state. The details as built:
   while it plays; the old material is scaled by (1 − decay) each pass (Frippertronics-style).
 - **Speed**: ½ (an octave down) or 1, or varispeed between; **reverse**; **brake**: the speed ramps to zero over the
   BRAKE time (pitch falls), then the tape stops; PLAY spins it up again.
+- **Pitch apart from speed**: when PITCH (plus the pads +12 / −12 / +7, clamped ±24 st) is not what the speed implies,
+  two overlapping triangle-windowed grains (1024 samples) read at the pitch's rate from the head position; with
+  LOCK the pitch stays when SPEED moves. The plain read comes back after three respawns with no pitch.
+- **Pads** (SEQ held): REV flips the direction, HALF / DOUBLE / STOP multiply the speed (the speed slews, so they bend),
+  STUT 8 / 16 / 32 repeat the piece of the loop (1/8, 1/16, 1/32 of its length) that starts where the pad went down
+  (a stutter), FREEZE holds the head, SKIP jumps an eighth of the loop ahead, RESTART goes back to the start, CHEW (held) jitters the speed and adds dropouts and a low-pass, ECHO
+  latches the tape echo's freeze. The jog (ALGORITHM) pushes the speed ±12.5 %, decaying.
+- **Dropouts**: with DROPOUT (and WEAR, and CHEW) the tape now and then loses level for 6..40+ blocks, as a worn
+  oxide does. At low speed the highs are lost (a one-pole follows the speed).
 - **Wear**: wow (~0.5 Hz) and flutter (~8 Hz) as a modulated read position, a soft tape saturation, hiss, and a
   slow loss of highs on each overdub pass.
 - The tape lives in RAM only: it is lost at power-off (by design).
@@ -153,6 +192,19 @@ softly; REPEATS up to 100 (feedback 1.07) lets the loop play itself, held at a p
 The line is 16-bit cells at 11 025 Hz, 32 768 of them (64 KB in the pool, 2.97 s). An empty line costs a scan of the
 block; a line quiet for its whole length is cleared, and so is one with ECHO 0 for 3 s.
 
+- **The motor**: TIME's target is chased by a slew whose speed is GLIDE (11 steps, 0.15 s .. 6 s across the range; the
+  error scales the speed, so a small change lands fast and a big one runs at the limit); a turn that outruns the
+  motor is dragged along, never waiting for the knob to stop. The head step is clamped to ±3 × (a head may read
+  backwards on a fast glide: the echoes throw).
+- **TAPE DRIVE**: a drive in front of the loop's soft clip (gain 1 .. 2.6, knee down from 20 000 to 6 000): the
+  repeats saturate and thicken as they circle.
+- **FREEZE** (the ECHO pad): the line stops recording, the heads loop what is on it (feedback by head count).
+- **Grain delay** (GRAINS): six grains read the same line. A grain is a triangle window over a length SIZE (20..620 ms),
+  spawned at DENSITY per second with jitter from SCATTER, at a start lag between SIZE/8 and SCATTER's far end; GRAIN
+  PITCH picks from a set (unison, an octave up or down, a fifth, ...), REVERSE is the chance of reading backwards,
+  GRAIN FEED writes the grains back into the line. Mix and the six-grain cap keep the output inside the master's
+  headroom.
+
 ## Timing and sequencing
 
 No step sequencer, no arpeggiator, no MIDI clock in v1. The cassette loop is free-running (its length is set by the
@@ -160,22 +212,26 @@ REC presses).
 
 ## What is stored
 
-- **16 sounds** (all engine, FX, ENV, LFO and macro values, a 12-character name, the engine choice): one record
-  (store slot 1, 16 × 94 bytes = 1 504 of 4 076). Each sound keeps its value count and room for 40 values, so new
-  values are appended and an older sound reads with them at their defaults.
-- **Settings** (MIDI channel, TRS MIDI IN, volume, octave, last sound, the cassette's values SPEED, DIRECTION, DECAY,
-  WEAR, BRAKE, the tape echo's TIME, REPEATS, ECHO, HEADS, WOBBLE, DULL): one record (store slot 0), with its own value count.
-- Both are written by SAVE (confirmed in the dialog), never in the background: a save fades the audio ~100 ms.
+- **16 sounds per mode** (all engine, FX, ENV, LFO and macro values, a 12-character name, the engine choice): one
+  record each (store slot 1 = HARSH, slot 2 = SHOEGAZE, 16 × 94 bytes = 1 504 of 4 076). Each sound keeps its value
+  count and room for 48 values, so new values are appended and an older sound reads with them at their defaults.
+  SAVE writes the bank of the mode that is on. A fresh unit: HARSH's slot 1 is INIT and 2..16 the factory sounds;
+  SHOEGAZE has its own INIT and 15 factory sounds.
+- **Settings** (MIDI channel, TRS MIDI IN, volume, octave, last sound, MODE, the cassette's values SPEED, PITCH, LOCK,
+  DIRECTION, DECAY, WEAR, BRAKE, DROPOUT, the tape echo's TIME, REPEATS, ECHO, HEADS, WOBBLE, DULL, GLIDE, TAPE DRIVE,
+  the grains' GRAINS, SIZE, DENSITY, GRAIN PITCH, SCATTER, REVERSE, GRAIN FEED, and the scale's SCALE, ROOT, CHORD,
+  LOW ROOT): one record (store slot 0), with its own value count; new values are only ever appended.
+- All are written by SAVE (confirmed in the dialog), never in the background: a save fades the audio ~100 ms.
   Every value read back is range-checked; a bad one takes its default, the rest are kept.
 - Not stored: the latched notes, the cassette.
 
 ## MIDI
 
-- In over USB and TRS (TRS MIDI IN on by default, type A): **notes only**. Note-on latches like a key; note-off is
-  ignored (latch); a second note-on of the same note releases it. Channel from GLO (omni default). TRS MIDI IN off
+- In over USB and TRS (TRS MIDI IN on by default, type A): **notes only**, single notes (the scale and the chords are
+  for the keys). Note-on latches like a key; note-off is ignored (latch); a second note-on of the same note releases it. Channel from GLO (omni default). TRS MIDI IN off
   drops what arrives over TRS.
 - A lost stream (the input ring overflowed) only loses toggles, since note-offs do nothing: the drones go on, SCL
-  silences them.
+  held silences them.
 - No CC, no clock, no MIDI out in v1.
 
 ## Open questions
@@ -183,12 +239,17 @@ REC presses).
 - Whether 4 notes × 3 layers of the FM engine fit the audio ISR with the fuzz, cabinet and tape: measure in the
   emulator and on the unit; the fallback is fewer FM copies per note.
 - The best picture for HOME (waveform vs. a slow spectrum): try both in the emulator.
-- What goes on TAPE 2's free rows (BRAKE alone for now).
+- **Not measured on hardware**: the audio ISR's load with the grains (delay and cassette) and the SHOEGAZE chain
+  all on (`audio_cpu_q8` on the first install), the pool (~16 KB more than before: check `budget_report.sh`),
+  the drawing's frame rate (HOME and FX redraw ~100 ms canvases; FX redraws two), how the reverb sounds on the real
+  speaker, and whether the grains click on a pad stutter.
+- The motor's "throw" at a high GLIDE (the heads read backwards for a moment) is intended but may be too wild: tune on the unit.
+- Pictures for EDIT, ENV and LFO (they are still rows).
 
 ## Out of scope for v1
 
-Step sequencer, arpeggiator, saving the tape, MIDI CC / clock / out, stereo effects (reverb, delay), audio input
-(the FM-1 has none).
+Step sequencer, arpeggiator, saving the tape, MIDI CC / clock / out, true stereo (the chorus and reverb are mono),
+audio input (the FM-1 has none).
 
 ## Milestones
 
@@ -205,3 +266,7 @@ Step sequencer, arpeggiator, saving the tape, MIDI CC / clock / out, stereo effe
    and slots 2..16 are factory sounds: MONOLITH, SUNN WALL, BEATING, DARK SUB, FM RUST, BELL TOLL, FM GROWL, SOUR
    CHORUS, TIDE, GLASS, TAR PIT, SWARM, ORGAN DOOM, FIZZ, HUM (`data.c` FACTORY).
 9. **HOME picture** and polish; then the first install on the FM-1 (new UC25HQ80 flash chip: the platform supports it).
+10. **Big update** (built): the tape echo's motor, drive, freeze and grains; the cassette's pitch, lock, pads, jog,
+    dropouts and chew; the HARSH / SHOEGAZE modes with their own banks, palette and pedalboard; the scales and chords;
+    the black hole on HOME, the interactive combo, the pictures of SCL, DELAY 3 / 4, TAPE and TAPE 2. All host-tested;
+    the speaker, the ISR load and the screen's speed wait for the unit.

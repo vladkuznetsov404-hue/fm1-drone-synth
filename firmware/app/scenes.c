@@ -89,10 +89,10 @@ static int32_t sc_bits(int32_t v)    /* the length of |v| in bits: a level on a 
 static void sc_delay(uint32_t y)
 {
     int32_t d = dl.d_pub ? dl.d_pub : dly_ms10(set.g[G_DT]) * DL_Q, ms10 = d / DL_Q, cells = d >> 16, v = dl.v_pub;
-    int32_t sp = 8 + (ms10 - 600) * 36 / 8900, x, k, off, i, dt, tick, spoke, heads = set.g[G_DHEADS];
+    int32_t sp = 14 + (ms10 - 600) * 32 / 8900, x, k, off, i, dt, tick, spoke, heads = set.g[G_DHEADS];
     uint32_t w = dl.w_pub;
     char b[24];
-    sp = sp < 6 ? 6 : sp > 46 ? 46 : sp;
+    sp = sp < 14 ? 14 : sp > 46 ? 46 : sp;
     dt = (int32_t)(fm1_ms - sc.t);
     dt = dt < 0 || dt > 200 || !sc.t ? 70 : dt;
     sc.t = fm1_ms;
@@ -132,7 +132,16 @@ static void sc_delay(uint32_t y)
         if (amp > 0)
             cv_rect(x, SCD_Y + 1 - amp, 1, 2 * amp, T_THEME);
     }
-    /* the heads: down on the tape when they play, lifted when they do not */
+    /* the heads: down on the tape when they play, lifted when they do not; the ghosts are where TIME is sending them */
+    {
+        int32_t tms = dly_ms10(set.g[G_DT]), tsp = 14 + (tms - 600) * 32 / 8900;
+        tsp = tsp < 14 ? 14 : tsp > 46 ? 46 : tsp;
+        for (k = 0; k < 3 && (tsp - sp > 1 || sp - tsp > 1); k++) {
+            int32_t gx = SCD_REC + (k + 1) * tsp;
+            cv_rrect(gx - 6, 31, 12, 18, 2, T_DIM, T_BG);
+            cv_rrect(gx - 5, 32, 10, 16, 2, T_BG, T_DIM);
+        }
+    }
     for (k = 0; k < 3; k++) {
         int32_t hx = SCD_REC + (k + 1) * sp, on = (heads >> k) & 1, hy = on ? 40 : 31;
         char n[2] = {(char)('1' + k), 0};
@@ -143,18 +152,30 @@ static void sc_delay(uint32_t y)
     }
     cv_rrect(SCD_REC - 7, 38, 14, 20, 2, T_REC, T_BG);                /* the record head */
     cv_text_in(SCD_REC - 7, 42, 14, &AF_S, "R", T_INK, T_REC);
+    cv_rect(SCD_REC, 27, sp, 1, T_ACCENT);                            /* the dimension: R to head 1 is TIME */
+    cv_rect(SCD_REC, 24, 1, 7, T_ACCENT);
+    cv_rect(SCD_REC + sp, 24, 1, 7, T_ACCENT);
+    cv_text(SCD_REC + sp + 6, 20, &AF_S, "= TIME", T_ACCENT);
     /* the numbers: the delay, and the bend while the motor runs */
     cv_text(8, 0, &AF_S, "TAPE ECHO", T_MID);
     num(b, ms10 / 10);
     str_cat(b, " MS", sizeof b);
     cv_text_r(232, 0, &AF_M, b, T_TEXT, T_BG);
+    if (dly_ms10(set.g[G_DT]) - ms10 > 30 || ms10 - dly_ms10(set.g[G_DT]) > 30) {   /* the motor is on its way */
+        str_cpy(b, "GOING TO ", sizeof b);               /* (the bottom row: below the reels and the lower run) */
+        num(b + 9, dly_ms10(set.g[G_DT]) / 10);
+        str_cat(b, " MS", sizeof b);
+        cv_text_r(232, 112, &AF_S, b, T_DIM, T_BG);
+    }
     if (v > 5243 || v < -5243) {                 /* head 1's pitch: D shortening by 0.04 cell a sample = +16 % */
-        int32_t pct = -v / 5243;
-        b[0] = pct > 0 ? '+' : '-';
-        num(b + 1, pct < 0 ? -pct : pct);
+        int32_t pct = -v / 5243;                 /* (the heads read at 3 x at most, backwards or forwards) */
+        pct = pct > 200 ? 200 : pct < -400 ? -400 : pct;
+        str_cpy(b, pct > 0 ? "SPINNING UP " : "SLOWING ", sizeof b);
+        i = (int32_t)str_len(b);
+        b[i] = pct > 0 ? '+' : '-';
+        num(b + i + 1, pct < 0 ? -pct : pct);
         str_cat(b, " %", sizeof b);
-        cv_text_r(232, 17, &AF_S, b, T_ACCENT, T_BG);
-        cv_text(8, 17, &AF_S, pct > 0 ? "SPINNING UP" : "SLOWING", T_ACCENT);
+        cv_text(8, 112, &AF_S, b, T_ACCENT);
     }
     cv_blit(0, y);
 }
@@ -172,56 +193,90 @@ static int32_t sc_level(void)    /* the drone's level 0 .. 256 from the last pic
     return m > 256 ? 256 : m;
 }
 
-static void sc_amp(uint32_t y)
+static int32_t sc_scope_max2(void)               /* the scope's peak (at least 64) */
 {
-    int32_t i, k, lev = sc_level(), cab = cur.p[P_CAB], drive = cur.p[P_DRIVE], y0, y1, shake = lev >> 6;
+    int32_t m = 64, a;
+    uint32_t i;
+    for (i = 0; i < SCOPE_N; i++) {
+        a = scope.y[i] < 0 ? -scope.y[i] : scope.y[i];
+        m = a > m ? a : m;
+    }
+    return m;
+}
+
+/* The combo, in two canvases: the top (the panel with its four knobs and their values, two valves, the scope of what
+ * comes out) and the bottom (the four speakers behind the cloth). The knobs are the amp's own: there is no second
+ * strip of dials. DRIVE lights the valves and, high up, makes flames and sparks; the level moves the cones and the
+ * dust caps; CAB changes the speakers (bare cones, a grille, a darker grille). */
+static void sc_amp(uint32_t y)                   /* 240 x 124 */
+{
+    int32_t i, k, lev = sc_level(), cab = cur.p[P_CAB], drive = cur.p[P_DRIVE], y0, y1, m, t = (int32_t)(fm1_ms / 60u);
     static const char *const LAB[4] = {"DRIVE", "TONE", "CAB", "LEVEL"};
+    static const uint8_t CODE[4] = {P_DRIVE, P_TONE, P_CAB, P_LEVEL};
+    char val[16];
     int32_t at[4];
     at[0] = drive * 32 / 100;
     at[1] = cur.p[P_TONE] * 32 / 100;
     at[2] = cab * 16;
     at[3] = cur.p[P_LEVEL] * 32 / 100;
     cv_begin(240, 124, T_BG);
-    cv_rrect(14, 2, 212, 120, 6, T_SURF, T_BG);                       /* the cabinet */
-    cv_rrect(16, 4, 208, 34, 4, T_BG, T_SURF);                        /* the panel */
+    cv_rrect(4, 2, 232, 58, 6, T_SURF, T_BG);                         /* the panel */
     for (k = 0; k < 4; k++) {
-        int32_t cx = 66 + k * 44;
-        cv_text_in(cx - 22, 5, 44, &AF_S, LAB[k], T_MID, T_BG);
-        sc_dial(cx, 27, 8, at[k], T_DIM, T_RAISE, k == 0 && drive > 60 ? T_ACCENT : T_THEME);
+        int32_t cx = 33 + k * 58;
+        cv_text_in(cx - 28, 3, 56, &AF_S, LAB[k], T_MID, T_SURF);
+        sc_dial(cx, 30, 11, at[k], T_DIM, T_RAISE, k == 0 && drive > 60 ? T_ACCENT : T_THEME);
+        par_text(val, sizeof val, cur.p[CODE[k]], SP[CODE[k]].fmt);
+        cv_text_in(cx - 28, 44, 56, &AF_S, val, T_TEXT, T_SURF);
     }
-    sc_disc(32, 21, 5, drive > 5 ? T_REC : T_DIM);                    /* the pilot lamp */
-    /* what comes out, as it is: squarer as the fuzz is turned up */
-    cv_rrect(18, 40, 204, 24, 3, T_BG, T_SURF);
+    sc_disc(11, 9, 3, drive > 5 ? T_REC : T_DIM);                     /* the pilot lamp */
+    for (k = 0; k < 2; k++) {                                         /* two valves: glow and flames with DRIVE */
+        int32_t x0 = k ? 206 : 8, gh = 4 + drive * 36 / 100 + lev / 16, fl = (t + k * 3) % 4;
+        cv_rrect(x0, 66, 26, 54, 8, T_RAISE, T_BG);
+        cv_rrect(x0 + 2, 68, 22, 50, 7, T_BG, T_RAISE);
+        cv_rect(x0 + 8, 116 - gh, 10, gh, drive > 40 ? T_ACCENT : T_THEME);
+        cv_rect(x0 + 6, 78, 1, 36, T_DIM);
+        cv_rect(x0 + 19, 78, 1, 36, T_DIM);
+        if (drive > 70)                                               /* flames over the valves */
+            for (i = 0; i < 3; i++)
+                cv_rect(x0 + 6 + i * 6, 64 - (2 + fl + i * (drive - 60) / 12) % 9, 3, 2 + (fl + i) % 4 + (drive - 60) / 10, T_ACCENT);
+        if (drive > 50 && lev > 100)                                  /* sparks */
+            for (i = 0; i < 3; i++)
+                cv_rect(x0 + (t * 7 + i * 11 + k * 5) % 24, 62 + (t * 3 + i * 5) % 7, 1, 1, T_TEXT);
+    }
+    cv_rrect(40, 64, 160, 58, 3, T_BG, T_SURF);                       /* what comes out, as it is: squarer with DRIVE */
+    cv_rect(42, 93, 156, 1, T_LINE);
     if (scope.count) {
-        int32_t m = 64;
-        for (i = 0; i < SCOPE_N; i++) {
-            int32_t a = scope.y[i] < 0 ? -scope.y[i] : scope.y[i];
-            m = a > m ? a : m;
-        }
-        y0 = 52 - scope.y[0] * 10 / m;
-        for (i = 1; i < SCOPE_N; i++) {
-            y1 = 52 - scope.y[i] * 10 / m;
-            cv_line(18 + (int32_t)(i - 1u) * 204 / (SCOPE_N - 1), y0, 18 + (int32_t)i * 204 / (SCOPE_N - 1), y1, T_THEME);
+        m = sc_scope_max2();
+        y0 = 93 - scope.y[0] * 25 / m;
+        for (i = 1; i < (int32_t)SCOPE_N; i++) {
+            y1 = 93 - scope.y[i] * 25 / m;
+            cv_line(42 + (i - 1) * 156 / ((int32_t)SCOPE_N - 1), y0, 42 + i * 156 / ((int32_t)SCOPE_N - 1), y1, T_THEME);
             y0 = y1;
         }
-    } else
-        cv_rect(20, 52, 200, 1, T_DIM);
-    /* the grille cloth, then four speakers */
-    if (cab)
-        for (y1 = 66; y1 < 119; y1 += cab == 2 ? 2 : 3)
-            cv_rect(18, y1, 204, 1, cab == 2 ? T_LINE : T_TINT);
+    }
+    cv_blit(0, y);
+}
+
+static void sc_amp_low(uint32_t y)               /* 240 x 64: the four speakers */
+{
+    int32_t k, y1, lev = sc_level(), cab = cur.p[P_CAB], drive = cur.p[P_DRIVE], shake = lev >> 6;
+    cv_begin(240, 64, T_BG);
+    if (cab)                                                          /* the grille cloth */
+        for (y1 = 0; y1 < 64; y1 += cab == 2 ? 2 : 3)
+            cv_rect(0, y1, 240, 1, cab == 2 ? T_LINE : T_TINT);
     for (k = 0; k < 4; k++) {
-        int32_t cx = 43 + k * 51 + (lev > 40 ? (k & 1 ? shake : -shake) : 0), cy = 93;
+        int32_t cx = 30 + k * 60 + (lev > 40 ? (k & 1 ? shake : -shake) : 0), cy = 32, push = lev / 64;
         if (cab) {
-            sc_disc(cx, cy, 22, T_BG);
-            sc_ring(cx, cy, 22, T_MID);
-            sc_disc(cx, cy, 16, cab == 2 ? T_TINT : T_RAISE);
-            sc_ring(cx, cy, 16, T_DIM);
+            sc_disc(cx, cy, 27, T_BG);
+            sc_ring(cx, cy, 27, T_MID);
+            sc_disc(cx, cy, 20 + push, cab == 2 ? T_TINT : T_RAISE);
+            sc_ring(cx, cy, 20 + push, T_DIM);
         } else {                                                      /* no cabinet: the bare cones */
-            sc_ring(cx, cy, 22, T_TEXT);
-            sc_ring(cx, cy, 15, T_MID);
+            sc_ring(cx, cy, 27, T_TEXT);
+            sc_ring(cx, cy, 19 + push, T_MID);
+            sc_ring(cx, cy, 12 + push, T_DIM);
         }
-        sc_disc(cx, cy, 4 + lev / 64, drive > 60 ? T_ACCENT : T_TEXT);   /* the dust cap: out with the level */
+        sc_disc(cx, cy, 5 + lev / 48, drive > 60 ? T_ACCENT : T_TEXT);   /* the dust cap: out with the level */
     }
     cv_blit(0, y);
 }
