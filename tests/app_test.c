@@ -101,6 +101,8 @@ static void reset_state(void)                    /* the app's RAM as at power-on
     memset(&ui, 0, sizeof ui);
     memset(&snd, 0, sizeof snd);
     memset(snd.fm_last, 0xFF, sizeof snd.fm_last);
+    memset(snd.mo_cc, 0xFF, sizeof snd.mo_cc);
+    memset(&mst, 0, sizeof mst);                 /* (the MASTER pot is read again at the first frame) */
     snd.croot = -1;                              /* (as the initialiser: no chord latched, the chord watch not yet seen) */
     snd.chsig = snd.scsig = 0xFFu;
     snd.ckey = -1;
@@ -542,7 +544,7 @@ static void persistence(void)
         check("damaged values: each defaulted, the valid ones kept",
               cur.p[P_DRIVE] == SP[P_DRIVE].def && cur.p[P_TONE] == 77 && cur.p[P_LAYERS] == SP[P_LAYERS].def &&
               cur.engine == ENG_SAW && !memcmp(cur.name, "INIT 01     ", NAME_LEN) && cur.np == NP &&
-              set.g[G_OCT] == -2 && set.g[G_VOL] == 33 && set.g[G_CH] == 0);
+              set.g[G_OCT] == -2 && set.g[G_CH] == 0);   /* (VOLUME is the knob's, not the record's) */
     }
     {   /* an older, shorter record: fewer values, fewer sounds; what it lacks at the defaults */
         bank.s[1].p[P_TONE] = 11;
@@ -555,7 +557,7 @@ static void persistence(void)
         store_save(SLOT_SET, APP_ID, &set, 4u + 2u * G_OCT);
         power_cycle();
         check("older record: its values read, the newer ones at defaults",
-              bank.s[1].p[P_TONE] == 11 && bank.s[1].p[P_RELEASE] == def_of(1, P_RELEASE) && set.g[G_VOL] == 44 &&
+              bank.s[1].p[P_TONE] == 11 && bank.s[1].p[P_RELEASE] == def_of(1, P_RELEASE) && set.g[G_CH] == 0 &&
               set.g[G_OCT] == -2 && !memcmp(bank.s[2].name, "SUNN WALL   ", NAME_LEN));
     }
     flash_ok = 0;
@@ -2484,10 +2486,482 @@ static void rotor_lfo(void)
     host_render(buf, 64);
 }
 
+/* ------------------------------------------------- the MASTER knob, MIDI out --- */
+static uint32_t midi_drain(uint32_t *notes_on, uint32_t *notes_off, int32_t *cc20, uint32_t *chan)
+{
+    uint32_t pkt, n = 0;
+    while (host_midi_out(&pkt)) {
+        uint32_t st = (pkt >> 8) & 0xF0u, d1 = (pkt >> 16) & 0x7Fu, d2 = pkt >> 24;
+        n++;
+        if (st == 0x90u && d2) {
+            (*notes_on)++;
+            *chan = (pkt >> 8) & 0x0Fu;
+        } else if (st == 0x80u || st == 0x90u)
+            (*notes_off)++;
+        else if (st == 0xB0u && d1 == 20u)
+            *cc20 = (int32_t)d2;
+    }
+    return n;
+}
+
+static void master_midi(void)
+{
+    uint32_t on = 0, off = 0, ch = 99, n;
+    int32_t cc = -1;
+    power_cycle();
+    host_adc[FM1_ADC_MASTER] = 1000;
+    run_frames(16);
+    check("MASTER knob at the top: VOLUME 100", set.g[G_VOL] == 100);
+    host_adc[FM1_ADC_MASTER] = 12;
+    run_frames(16);
+    check("MASTER knob at the bottom: VOLUME 0 (silent)", set.g[G_VOL] == 0);
+    host_adc[FM1_ADC_MASTER] = 506;
+    run_frames(16);
+    check("MASTER knob in the middle: VOLUME 50", set.g[G_VOL] == 50);
+    host_adc[FM1_ADC_MASTER] = 509;
+    run_frames(16);
+    check("MASTER jitter of 3 counts leaves VOLUME alone", set.g[G_VOL] == 50);
+    host_adc[FM1_ADC_MASTER] = 512;
+    run_frames(16);
+    check("MASTER moved 6 counts: VOLUME follows (51)", set.g[G_VOL] == 51);
+    host_adc[FM1_ADC_MASTER] = 506;
+    run_frames(16);
+    set.g[G_VOL] = 33;
+    run_frames(16);
+    check("the knob is the truth: a VOLUME that differs from it is overwritten", set.g[G_VOL] == 50);
+    host_adc[FM1_ADC_MASTER] = 802;
+    run_frames(16);
+    check("MASTER 802: VOLUME 80, the output follows it", set.g[G_VOL] == 80);
+    {
+        int32_t lo, hi;
+        double a, b;
+        tap_key(10);
+        host_render(buf, 2048);
+        a = rms_ch(buf + 1024, 512, 0);
+        host_adc[FM1_ADC_MASTER] = 300;
+        run_frames(16);
+        host_render(buf, 2048);
+        b = rms_ch(buf + 1024, 512, 0);
+        lo = set.g[G_VOL];
+        hi = a > b * 1.5;
+        check("a lower MASTER knob makes it quieter", hi && lo < 80);
+        tap_key(10);
+        run_frames(60);
+    }
+    power_cycle();
+    host_adc[FM1_ADC_MASTER] = 802;
+    run_frames(16);
+    midi_drain(&on, &off, &cc, &ch);             /* (the macros' first CCs go out) */
+    on = off = 0;
+    tap_key(5);
+    host_render(buf, 256);
+    n = midi_drain(&on, &off, &cc, &ch);
+    check("MIDI out: a latched key sends one note-on", on == 1 && off == 0 && n >= 1);
+    check("MIDI out: on channel 1 with OMNI", ch == 0);
+    tap_key(5);
+    host_render(buf, 256);
+    on = off = 0;
+    midi_drain(&on, &off, &cc, &ch);
+    check("MIDI out: unlatching it sends the note-off", on == 0 && off == 1);
+    set.g[G_CH] = 5;
+    tap_key(7);
+    host_render(buf, 256);
+    on = off = 0;
+    ch = 99;
+    midi_drain(&on, &off, &cc, &ch);
+    check("MIDI out: on the channel set in GLO", on == 1 && ch == 4);
+    set.g[G_CH] = 2;
+    host_render(buf, 256);
+    on = off = 0;
+    midi_drain(&on, &off, &cc, &ch);
+    check("MIDI out: a channel change releases the old and plays on the new", off == 1 && on == 1 && ch == 1);
+    tap_key(7);
+    host_render(buf, 256);
+    on = off = 0;
+    midi_drain(&on, &off, &cc, &ch);
+    check("MIDI out: unlatching sends the note-off", off == 1);
+    cur.p[P_MASSA] = 100;
+    host_render(buf, 1024);
+    midi_drain(&on, &off, &cc, &ch);
+    check("MIDI out: MASSA goes out as CC 20 (100 -> 127)", cc == 127);
+    set.g[G_CH] = 0;
+    host_midi(0x90, 60, 100);                    /* a note in over USB: it must not come back out */
+    host_render(buf, 256);
+    on = off = 0;
+    midi_drain(&on, &off, &cc, &ch);
+    check("MIDI out: a note that came in over MIDI is not sent back", on == 0 && is_held(60));
+    host_midi(0x90, 60, 100);
+    host_render(buf, 256);
+    set.g[G_CH] = 0;
+}
+
+static void sound_list(void)
+{
+    power_cycle();
+    host_clipped = 0;
+    turn(EN_PRESET, 4);
+    host_png("build/shots/sound_list.png");
+    check("PRESETS turned: the list of sounds is over the page", ui.lst == 1 && set.g[G_SLOT] == 4);
+    check("the list: nothing cut or outside the screen", host_clipped == 0u);
+    turn(EN_PRESET, 1);
+    check("the list stays while it turns, and loads the sound", ui.lst == 1 && set.g[G_SLOT] == 5 &&
+          cur.p[P_DRIVE] == bank.s[5].p[P_DRIVE]);
+    run_frames(60);                              /* ~1 s */
+    check("the list is still there after 1 s", ui.lst == 1);
+    run_frames(100);                             /* 2.6 s in all */
+    check("the list goes 2.5 s after the last click", ui.lst == 0);
+    turn(EN_PRESET, -1);
+    press(B_FX);
+    check("a button closes the list and does its job", ui.lst == 0 && ui.page == PG_FX);
+    turn(EN_PRESET, 1);
+    press(B_SAVE);
+    check("SAVE closes the list and opens the dialog", ui.lst == 0 && ui.dlg == 1);
+    press(B_OCTDN);
+}
+
+static void accel_test(void)
+{
+    int32_t a, b, c, d;
+    ac_on = 1;
+    power_cycle();
+    run_frames(40);
+    cur.p[P_MASSA] = 0;
+    memset(&ac, 0, sizeof ac);
+    run_frames(1);
+    turn(EN_K1, 1);
+    check("one slow click: one unit", cur.p[P_MASSA] == 1);
+    run_frames(20);                              /* a pause of 0.3 s */
+    turn(EN_K1, 1);
+    check("another slow click: one unit again", cur.p[P_MASSA] == 2);
+    run_frames(30);
+    cur.p[P_MASSA] = 0;
+    for (a = 0; a < 20; a++) {                   /* a fast spin: one click a frame (~60 a second) */
+        host_turn(EN_K1, 1);
+        host_frame();
+    }
+    check("a fast spin of 20 clicks goes much further than 20 units", cur.p[P_MASSA] >= 60 && cur.p[P_MASSA] <= 100);
+    run_frames(40);
+    cur.p[P_MASSA] = 0;
+    for (a = 0; a < 8; a++) {                    /* a slow spin: a click every 5 frames (~12 a second) */
+        host_turn(EN_K1, 1);
+        host_frame();
+        run_frames(4);
+    }
+    check("a slow spin of 8 clicks is exactly 8 units", cur.p[P_MASSA] == 8);
+    run_frames(40);
+    cur.p[P_CAB] = 0;
+    for (a = 0; a < 20; a++) {
+        host_turn(EN_K3, 1);
+        host_frame();
+    }
+    press(B_FX);
+    b = cur.p[P_CAB];
+    check("a choice (the cabinet) is not accelerated", b <= 2);
+    run_frames(40);
+    memset(&ac, 0, sizeof ac);
+    press(B_SCL);                                /* SCL: ROOT 0..11 is a choice: a click a step, however fast */
+    set.g[G_ROOT] = 0;
+    for (a = 0; a < 6; a++) {
+        host_turn(EN_K2, 1);
+        host_frame();
+    }
+    check("a choice with a dozen values (ROOT) is not accelerated either", set.g[G_ROOT] == 6);
+    run_frames(40);
+    memset(&ac, 0, sizeof ac);
+    press(B_SEQ);                                /* SLICE: SPEED 10..300 */
+    set.g[G_SPEED] = 100;
+    for (a = 0; a < 10; a++) {
+        host_turn(EN_K1, 1);
+        host_frame();
+    }
+    c = set.g[G_SPEED];
+    check("SLICE's SPEED (10..300) is accelerated too", c > 130 && c <= 300);
+    run_frames(40);
+    d = set.g[G_SPEED];
+    ac_on = 0;
+    (void)d;
+}
+
+static void rec_key_erase(void)
+{
+    uint32_t n0;
+    power_cycle();
+    press_t(B_REC);
+    host_render(buf, 20000);
+    press_t(B_REC);
+    check("a loop recorded and playing", tape.st == TP_PLAY && tape.len > 0u);
+    n0 = n_held();
+    ui.toast = 0;
+    host_press(B_REC, 1);
+    host_frame();
+    fm1_in.notes |= 1u;                          /* the leftmost key, REC held */
+    host_frame();
+    host_render(buf, 64);
+    host_frame();
+    fm1_in.notes &= ~1u;
+    host_press(B_REC, 0);
+    host_frame();
+    host_render(buf, 64);
+    host_frame();
+    check("REC held + the leftmost key: the loop is erased", tape.st == TP_EMPTY && tape.len == 0u &&
+          str_eq(ui.toast, "TAPE ERASED"));
+    check("... and the key made no note", n_held() == n0);
+    press_t(B_REC);
+    host_render(buf, 20000);
+    press_t(B_REC);
+    host_press(B_REC, 1);
+    host_frame();
+    fm1_in.notes |= 2u;                          /* any other key, REC held: no erase, no note */
+    host_frame();
+    host_render(buf, 64);
+    fm1_in.notes &= ~2u;
+    host_press(B_REC, 0);
+    host_frame();
+    host_render(buf, 64);
+    check("REC held + another key: nothing erased, no note", tape.len > 0u && n_held() == n0);
+    press_t(B_REC);
+    press_t(B_REC);
+}
+
+/* ------------------------------------------------------------ the generator --- */
+static uint32_t gen_notes_mask(uint32_t *lo, uint32_t *hi)   /* the notes held, as a bit set over 36..99 (lo, hi words) */
+{
+    uint32_t i, n = 0;
+    *lo = *hi = 0;
+    for (i = 0; i < NV; i++)
+        if (snd.held[i] >= 36u && snd.held[i] < 100u) {
+            uint32_t b = (uint32_t)snd.held[i] - 36u;
+            if (b < 32u)
+                *lo |= 1u << b;
+            else
+                *hi |= 1u << (b - 32u);
+            n++;
+        }
+    return n;
+}
+
+/* runs the audio for `secs`; returns the number of times the set of held notes changed, the most held at once, and
+ * whether a note outside `ok(note)` ever sounded */
+static uint32_t gen_run(uint32_t secs, uint32_t *most, int (*ok)(int32_t), int *bad)
+{
+    uint32_t t, changes = 0, plo = 0, phi = 0, lo, hi, n;
+    *most = 0;
+    for (t = 0; t < secs * 20u; t++) {
+        uint32_t i;
+        host_render(buf, 2205);                  /* 50 ms */
+        n = gen_notes_mask(&lo, &hi);
+        *most = n > *most ? n : *most;
+        if (lo != plo || hi != phi)
+            changes++;
+        plo = lo;
+        phi = hi;
+        for (i = 0; ok && i < NV; i++)
+            if (snd.held[i] && !ok(snd.held[i]))
+                *bad = 1;
+    }
+    return changes;
+}
+
+static int ok_pent(int32_t note)                 /* MANUAL: the minor pentatonic over the keyboard's first note */
+{
+    int32_t d = (note - (int32_t)key_note(0)) % 12;
+    return d == 0 || d == 3 || d == 5 || d == 7 || d == 10;
+}
+
+static int ok_minor(int32_t note)
+{
+    int32_t d = (note - scale_start()) % 12, i;
+    for (i = 0; i < (int32_t)SC_LEN[1]; i++)
+        if (SC_DEG[1][i] == d)
+            return 1;
+    return 0;
+}
+
+static void render_long(uint32_t frames)         /* more than the buffer holds: in pieces of one second */
+{
+    while (frames) {
+        uint32_t n = frames > 44100u ? 44100u : frames;
+        host_render(buf, n);
+        frames -= n;
+    }
+}
+
+static void generator(void)
+{
+    uint32_t most, ch, i, ev;
+    int bad = 0;
+    static uint8_t saved_gen[sizeof gen];
+    power_cycle();
+    set.g[G_VOL] = 80;
+    host_adc[FM1_ADC_MASTER] = 802;
+    set.g[G_XLIFE] = 0;
+    ch = gen_run(20, &most, 0, &bad);
+    check("GEN: LIFE 0 plays nothing by itself", ch == 0 && most == 0);
+    set.g[G_XLIFE] = 100;
+    set.g[G_XNOTES] = 2;
+    set.g[G_XSPAN] = 2;
+    ch = gen_run(40, &most, ok_pent, &bad);
+    check("GEN: LIFE 100 plays: many changes in 40 s", ch >= 20u);
+    check("GEN: never more than NOTES (2) at once", most >= 1 && most <= 2);
+    check("GEN: MANUAL: every note in the minor pentatonic", !bad);
+    set.g[G_XNOTES] = 1;
+    ch = gen_run(20, &most, ok_pent, &bad);
+    check("GEN: NOTES 1: one note at most", most <= 1 && ch >= 5u);
+    set.g[G_XNOTES] = 4;
+    ch = gen_run(40, &most, ok_pent, &bad);
+    check("GEN: NOTES 4: it fills up to four", most >= 3 && most <= 4);
+    set.g[G_XLIFE] = 0;
+    run_frames(2);
+    {   /* it stops where it is: what it latched stays */
+        uint32_t lo, hi, n0 = gen_notes_mask(&lo, &hi), lo2, hi2;
+        host_render(buf, 4410);
+        check("GEN: LIFE 0 again: it keeps what it latched and stands still",
+              gen_notes_mask(&lo2, &hi2) == n0 && lo == lo2 && hi == hi2);
+    }
+    /* SPAN 1: nothing above the first octave of the scale (here MANUAL: the keyboard's first note) */
+    power_cycle();
+    set.g[G_XLIFE] = 100;
+    set.g[G_XNOTES] = 3;
+    set.g[G_XSPAN] = 1;
+    {
+        uint32_t t, j;
+        int hi_ok = 1;
+        for (t = 0; t < 600; t++) {
+            host_render(buf, 2205);
+            for (j = 0; j < NV; j++)
+                if (snd.held[j] && snd.held[j] >= key_note(0) + 12)
+                    hi_ok = 0;
+        }
+        check("GEN: SPAN 1: nothing above the first octave", hi_ok);
+    }
+    power_cycle();
+    set.g[G_SCALE] = 1;
+    set.g[G_XLIFE] = 100;
+    set.g[G_XNOTES] = 3;
+    set.g[G_XSPAN] = 1;
+    {
+        uint32_t t, j;
+        int hi_ok = 1;
+        for (t = 0; t < 600; t++) {
+            host_render(buf, 2205);
+            for (j = 0; j < NV; j++)
+                if (snd.held[j] && snd.held[j] >= scale_start() + 12)
+                    hi_ok = 0;
+        }
+        check("GEN: SPAN 1 in a scale: nothing above its first octave", hi_ok);
+    }
+    /* the scale is the scale's: MINOR from C */
+    power_cycle();
+    set.g[G_SCALE] = 1;
+    set.g[G_ROOT] = 0;
+    set.g[G_XLIFE] = 100;
+    set.g[G_XNOTES] = 3;
+    set.g[G_XSPAN] = 3;
+    bad = 0;
+    ch = gen_run(40, &most, ok_minor, &bad);
+    check("GEN: SCALE MINOR: every note is in the scale", !bad && ch >= 20u);
+    /* the player's own notes are never released by it */
+    power_cycle();
+    set.g[G_XLIFE] = 100;
+    set.g[G_XNOTES] = 2;
+    tap_key(25);
+    {
+        int32_t mine = snd.held[0] ? snd.held[0] : 0, still = 1;
+        for (i = 0; i < 800; i++) {
+            uint32_t j, f = 0;
+            host_render(buf, 2205);
+            for (j = 0; j < NV; j++)
+                f |= snd.held[j] == mine;
+            still &= (int)f;
+        }
+        check("GEN: the player's own latched note is never released by it", mine && still);
+    }
+    /* a chord mode: it changes chords */
+    power_cycle();
+    set.g[G_CHORD] = 1;
+    set.g[G_XLIFE] = 100;
+    set.g[G_XSPAN] = 2;
+    {
+        uint32_t roots = 0, t, seen[8] = {0}, nseen = 0, j;
+        for (t = 0; t < 800; t++) {
+            host_render(buf, 2205);
+            if (snd.croot >= 0) {
+                for (j = 0; j < nseen && seen[j] != (uint32_t)snd.croot; j++)
+                    ;
+                if (j == nseen && nseen < 8u)
+                    seen[nseen++] = (uint32_t)snd.croot;
+            }
+        }
+        roots = nseen;
+        check("GEN: CHORD POWER: it plays several different chords", roots >= 3u && n_held() <= NV);
+    }
+    /* the timing: LIFE 1 is slow, LIFE 100 fast */
+    power_cycle();
+    set.g[G_XLIFE] = 1;
+    ev = gen_run(30, &most, 0, &bad);
+    check("GEN: LIFE 1: at most a move or two in 30 s", ev <= 3u);
+    set.g[G_XLIFE] = 50;
+    ev = gen_run(30, &most, 0, &bad);
+    check("GEN: LIFE 50: about every 2.8 s (5..20 moves in 30 s)", ev >= 5u && ev <= 20u);
+    set.g[G_XLIFE] = 1;
+    gen_run(1, &most, 0, &bad);
+    set.g[G_XLIFE] = 100;
+    ev = gen_run(4, &most, 0, &bad);
+    check("GEN: LIFE turned up from 1 to 100: it reacts within seconds", ev >= 1u);
+    /* DRIFT */
+    power_cycle();
+    set.g[G_XLIFE] = 0;
+    set.g[G_XDRIFT] = 100;
+    render_long(44100u * 8u);
+    check("GEN: DRIFT 100: the cutoff, the fuzz and the spin wander off zero",
+          gdr.cut != 0 && gdr.gain != 0 && gdr.spin != 0);
+    {
+        int32_t lo = 0, hi = 0, t;
+        for (t = 0; t < 120; t++) {
+            host_render(buf, 22050);
+            lo = GDR(gdr.cut) < lo ? GDR(gdr.cut) : lo;
+            hi = GDR(gdr.cut) > hi ? GDR(gdr.cut) : hi;
+        }
+        check("GEN: DRIFT 100: the cutoff stays inside +-30 steps and moves both ways", lo >= -31 && hi <= 31 && lo < -5 && hi > 5);
+    }
+    set.g[G_XDRIFT] = 0;
+    render_long(44100u * 30u);
+    check("GEN: DRIFT 0: everything glides back to 0", GDR(gdr.cut) == 0 && GDR(gdr.gain) == 0 && GDR(gdr.spin) == 0);
+    set.g[G_XDRIFT] = 100;
+    cur.p[P_SPIN] = 0;
+    render_long(44100u * 8u);
+    check("GEN: DRIFT does not start the rotor when SPIN is 0", !sp.on);
+    (void)saved_gen;
+    /* the page */
+    power_cycle();
+    host_clipped = 0;
+    press(B_SCL);
+    check("SCL tap: the scale page", ui.page == PG_SCL);
+    press(B_SCL);
+    check("SCL tap again: the generator page", ui.page == PG_GEN);
+    set.g[G_XLIFE] = 60;
+    set.g[G_XDRIFT] = 70;
+    run_frames(60);
+    host_png("build/shots/gen.png");
+    check("GEN page: nothing cut or outside its canvas", host_clipped == 0u);
+    turn(EN_K1, 5);
+    turn(EN_K2, 1);
+    turn(EN_K3, 1);
+    turn(EN_K4, -5);
+    check("GEN: the four knobs turn LIFE, NOTES, SPAN, DRIFT", set.g[G_XLIFE] == 65 && set.g[G_XNOTES] == 3 &&
+          set.g[G_XSPAN] == 3 && set.g[G_XDRIFT] == 65);
+    press(B_SCL);
+    check("SCL tap again: back to the scale page", ui.page == PG_SCL);
+    set.g[G_XLIFE] = 0;
+    set.g[G_XDRIFT] = 0;
+}
+
 int main(void)
 {
     if (system("mkdir -p build/shots"))
         return 1;
+    host_adc[FM1_ADC_MASTER] = 802;              /* the knob at VOLUME 80 (the default) */
+    ac_on = 0;                                   /* exact steps: the acceleration has its own test */
     screen();
     controls();
     persistence();
@@ -2505,6 +2979,11 @@ int main(void)
     scl_glide();
     scl_live();
     rotor_lfo();
+    master_midi();
+    sound_list();
+    accel_test();
+    rec_key_erase();
+    generator();
     delay_audio();
     puts(failed ? "APP TEST FAILED" : "app test passed");
     return failed ? 1 : 0;

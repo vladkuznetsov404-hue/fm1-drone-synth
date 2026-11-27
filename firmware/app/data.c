@@ -33,6 +33,7 @@ enum { G_CH, G_TRS, G_VOL, G_OCT, G_SLOT, G_SPEED, G_DIR, G_DECAY, G_WEAR, G_BRA
        G_DROP,                                             /* the cassette's dropouts */
        G_SLIDE,                                            /* the notes' glide when a chord changes (tenths of a second) */
        G_AMASS,                                            /* ANOMALY's MASS: bends time between the echoes and tears grains off them */
+       G_XLIFE, G_XNOTES, G_XSPAN, G_XDRIFT,               /* SCL 2, the generator: how often it acts, how many notes, the register, the sound's drift */
        NG };
 #define G_ROOM 48
 
@@ -105,6 +106,10 @@ static const par_t GP[NG] = {
     [G_DROP] = {"DROPOUT", 0, 100, 0, F_NUM},
     [G_AMASS] = {"MASS", 0, 100, 25, F_NUM},       /* the well the echoes fall into (the old HEADS and the grains' own knobs are no longer on the screen) */
     [G_SLIDE] = {"SLIDE", 0, 60, 15, F_SEC10},     /* the time constant of a note moving to the next chord: 0 = at once */
+    [G_XLIFE] = {"LIFE", 0, 100, 0, F_NUM},        /* 0: the generator is off; up: a note every ~20 s .. ~0.8 s (a step every so often) */
+    [G_XNOTES] = {"NOTES", 1, 4, 2, F_NUM},        /* the notes it likes to hold at once (a chord mode: it changes chords instead) */
+    [G_XSPAN] = {"SPAN", 1, 4, 2, F_NUM},          /* the register it wanders in, in octaves above the scale's start */
+    [G_XDRIFT] = {"DRIFT", 0, 100, 0, F_NUM},      /* how far the cutoff, the fuzz and the spin wander by themselves (works with LIFE 0) */
 };
 
 typedef struct {

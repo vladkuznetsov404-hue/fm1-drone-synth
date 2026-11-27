@@ -95,7 +95,10 @@ static struct {
     int32_t xf;                  /* the crossfade: 0 SAW .. 32 768 FM, Q15 */
     uint32_t fbk, ix, ratio;     /* FM: the feedback and the index as phase per unit (>> 15 applied), the ratio */
     int16_t fm_last[3];          /* the values fm_update last used: FEEDBACK, INDEX, MASSA (-1 never) */
-} snd = {.fm_last = {-1, -1, -1}, .croot = -1, .chsig = 0xFFu, .scsig = 0xFFu, .ckey = -1};
+    uint32_t mo_notes[4];        /* MIDI out: the notes (bit per note 0..127) whose note-on went out */
+    uint8_t mo_ch, mo_rr;        /* the channel they went out on; the next macro CC to look at */
+    int16_t mo_cc[4];            /* the last value sent per macro CC (-1 never) */
+} snd = {.fm_last = {-1, -1, -1}, .croot = -1, .chsig = 0xFFu, .scsig = 0xFFu, .ckey = -1, .mo_cc = {-1, -1, -1, -1}};
 
 static __attribute__((noinline)) void fm_update(void)   /* FEEDBACK (+ half of MASSA) and INDEX -> phase amounts */
 {
@@ -532,6 +535,183 @@ static __attribute__((noinline)) void snd_requests(void)
     }
 }
 
+/* The generator (SCL 2, LIFE > 0): it plays the keys by itself. Every so often (LIFE 1..100: ~20 s .. ~0.8 s, each
+ * time 0.6 .. 1.4 times that) it does one thing, as a finger would on the latching keys: latches a note, releases one
+ * it latched, or does both. The note is a random step (up to 3 scale degrees) from the last one within SPAN octaves of
+ * the scale's start (MANUAL: the minor pentatonic), now and then back at the root. It holds up to NOTES notes. With a
+ * chord mode on (CHORD or LOW ROOT) it changes chords instead, now and then ending one. It acts through the same
+ * key presses as the player (so SLIDE, the chords and the scales work as always), and only ever releases its own notes.
+ * The cost is a counter a block; the work comes once per event. */
+static struct { uint32_t rnd, t, next, inv, life; uint8_t key1[4], ck1; int8_t pos; } gen;   /* inv: 255 x 2^16 / (next / 256), for the progress without a divide */
+static volatile uint32_t gen_pub_keys;           /* ISR -> screen: the keys the generator holds (bit per key) */
+static volatile uint8_t gen_pub_prog;            /* ISR -> screen: how far to the next event, 0..255 */
+
+static uint32_t gen_rand(void)
+{
+    gen.rnd = gen.rnd ? gen.rnd : 0x9E3779B9u;
+    gen.rnd ^= gen.rnd << 13;
+    gen.rnd ^= gen.rnd >> 17;
+    gen.rnd ^= gen.rnd << 5;
+    return gen.rnd;
+}
+
+static int gen_sounding(uint32_t k)              /* a voice started by this key is on */
+{
+    uint32_t i;
+    for (i = 0; i < NV; i++)
+        if (snd.v[i].state == V_ON && snd.v[i].key1 == k + 1u)
+            return 1;
+    return 0;
+}
+
+static void gen_press(uint32_t k)
+{
+    snd.skey1 = (uint8_t)(k + 1u);
+    snd_press(key_note(k), SRC_KEY);
+    snd.skey1 = 0;
+}
+
+static uint32_t gen_pick(void)                   /* the next key: a step from the last, within the register */
+{
+    static const uint8_t PENT[5] = {0, 3, 5, 7, 10};
+    uint32_t sc = (uint32_t)set.g[G_SCALE], span = (uint32_t)set.g[G_XSPAN], len = sc >= 1u && sc <= 6u ? SC_LEN[sc] : 5u;
+    int32_t hi = (int32_t)(span * len) - 1, st = (int32_t)(gen_rand() % 7u) - 3, k;
+    for (;;) {
+        gen.pos = (int8_t)(gen.pos + (st ? st : 4));
+        gen.pos = gen.pos < 0 ? 0 : gen.pos > hi ? (int8_t)hi : gen.pos;
+        if (gen_rand() % 100u < 15u)             /* now and then home: the root of a random octave */
+            gen.pos = (int8_t)((gen_rand() % span) * len);
+        k = sc >= 1u && sc <= 6u ? gen.pos : 12 * (gen.pos / 5) + PENT[gen.pos % 5];
+        if (k <= 26)
+            return (uint32_t)k;
+        hi = gen.pos - 1;                        /* off the keyboard: lower the ceiling and try again */
+        if (hi < 0)
+            return 0;
+    }
+}
+
+static __attribute__((noinline)) void gen_event(void)
+{
+    uint32_t i, j2, n = 0, k, r = gen_rand() % 100u, dens = (uint32_t)set.g[G_XNOTES];
+    if (set.g[G_CHORD] > 0 || set.g[G_LOW] > 0) {   /* chords: a new one, or the end of this one */
+        if (gen.ck1 && snd_any_on() && snd.ckey == (int8_t)(gen.ck1 - 1) && r < 25u) {
+            gen_press((uint32_t)gen.ck1 - 1u);
+            gen.ck1 = 0;
+        } else {
+            k = gen_pick();
+            if (gen.ck1 == k + 1u && snd_any_on())
+                k = gen_pick();
+            gen_press(k);
+            gen.ck1 = (uint8_t)(k + 1u);
+        }
+    } else {
+        gen.ck1 = 0;
+        for (i = 0; i < 4u; i++) {
+            if (gen.key1[i] && !gen_sounding((uint32_t)gen.key1[i] - 1u))
+                gen.key1[i] = 0;                 /* the player (or a steal) ended it */
+            n += gen.key1[i] != 0;
+        }
+        dens = dens < 1u ? 1u : dens > 4u ? 4u : dens;
+        {
+            int rem, add;                        /* none held: add; room: add (65 %) or release; full: move (50 %) or release */
+            if (!n)
+                rem = 0, add = 1;
+            else if (n < dens)
+                rem = r >= 65u, add = !rem;
+            else
+                rem = 1, add = r < 50u;
+            if (rem) {                           /* release one of its own */
+                uint32_t at = gen_rand() % n, j = 0;
+                for (i = 0; i < 4u; i++)
+                    if (gen.key1[i] && j++ == at) {
+                        gen_press((uint32_t)gen.key1[i] - 1u);
+                        gen.key1[i] = 0;
+                        break;
+                    }
+            }
+            for (j2 = 0; add && j2 < 4u; j2++) { /* a free key (a few tries) */
+                k = gen_pick();
+                if (gen_sounding(k))
+                    continue;
+                for (i = 0; i < 4u; i++)
+                    if (!gen.key1[i]) {
+                        gen_press(k);
+                        gen.key1[i] = (uint8_t)(k + 1u);
+                        break;
+                    }
+                break;
+            }
+        }
+    }
+    {
+        uint32_t m = 0;
+        for (i = 0; i < 4u; i++)
+            if (gen.key1[i])
+                m |= 1u << (gen.key1[i] - 1u);
+        if (gen.ck1)
+            m |= 1u << (gen.ck1 - 1u);
+        gen_pub_keys = m;
+    }
+}
+
+static __attribute__((noinline)) void snd_gen(uint32_t n)
+{
+    uint32_t life = (uint32_t)set.g[G_XLIFE], ms;
+    if (!life) {                                 /* off: it keeps what it latched, stands still */
+        gen.t = gen.next = 0;
+        gen_pub_prog = 0;
+        return;
+    }
+    if (!gen.next || life != gen.life) {         /* a new schedule (LIFE turned: the time already waited counts) */
+        ms = 20000u / (1u + life * life / 400u);   /* 20 s at LIFE 1, 0.8 s at 100 */
+        gen.next = ms * 441u / 10u * (60u + gen_rand() % 81u) / 100u;   /* samples, x 0.6 .. 1.4 */
+        gen.inv = (255u << 16) / ((gen.next >> 8) | 1u);
+        gen.life = life;
+    }
+    gen.t += n;
+    gen_pub_prog = (uint8_t)(gen.t >= gen.next ? 255u : ((gen.t >> 8) * gen.inv) >> 16);
+    if (gen.t >= gen.next) {
+        gen.next = 0;
+        gen.t = 0;
+        gen_event();
+    }
+}
+
+/* MIDI out over USB: what the keys play, as it sounds. Once a block the notes of the key voices that are on (a note that
+ * came in over MIDI is not sent back: a host that routes the FM-1's output to its input would latch and unlatch it in a
+ * loop) are compared with the set already sent: new ones go out as note-on (velocity 100), gone ones as note-off. A
+ * channel change first releases what sounded on the old channel. The four macros go out as CC 20..23 (0..127) when they
+ * change, one per block at most. The platform's ring (64 events) drops what a host does not read. */
+static __attribute__((noinline)) void snd_midi_out(void)
+{
+    uint32_t now[4] = {0, 0, 0, 0}, i, w, b, ch = set.g[G_CH] ? (uint32_t)set.g[G_CH] - 1u : 0u;
+    int32_t v;
+    for (i = 0; i < NV; i++)
+        if (snd.v[i].state == V_ON && snd.v[i].src == SRC_KEY && snd.v[i].note < 128u)
+            now[snd.v[i].note >> 5] |= 1u << (snd.v[i].note & 31u);
+    for (w = 0; w < 4u; w++) {
+        uint32_t off = snd.mo_notes[w] & ~now[w], on = ch == snd.mo_ch ? now[w] & ~snd.mo_notes[w] : 0u;
+        if (ch != snd.mo_ch)
+            off = snd.mo_notes[w];
+        for (b = 0; off | on; b++) {
+            if ((off >> b) & 1u)
+                midi_out(0x80u | snd.mo_ch, w * 32u + b, 0);
+            if ((on >> b) & 1u)
+                midi_out(0x90u | ch, w * 32u + b, 100);
+            off &= ~(1u << b);
+            on &= ~(1u << b);
+        }
+        snd.mo_notes[w] = ch == snd.mo_ch ? now[w] : 0u;
+    }
+    snd.mo_ch = (uint8_t)ch;
+    i = snd.mo_rr++ & 3u;
+    v = (int32_t)cur.p[P_MASSA + i] * 127 / 100;
+    if (v != snd.mo_cc[i]) {
+        snd.mo_cc[i] = (int16_t)v;
+        midi_out(0xB0u | ch, 20u + i, (uint32_t)v);
+    }
+}
+
 static void snd_render(int32_t *out, uint32_t n)
 {
     uint32_t keys = snd.pad_mode ? 0u : fm1_in.notes, pkt, src, i, j;
@@ -545,11 +725,13 @@ static void snd_render(int32_t *out, uint32_t n)
         snd_midi(pkt, src);
     snd_chord_watch();
     snd_rekey();
+    snd_gen(n);
     snd_glide(n);
     if (snd.stop_req | snd.silence_req)          /* after the queue: what came before a stop is forgotten too */
         snd_requests();
     if (tune_sig() != snd.tune_sig)              /* (also the first block: the signature starts at 0, never valid) */
         snd_retune();
+    snd_midi_out();
     fx_check();
     breath_block();                              /* the LFOs: br.pm, fx.dark_a, fx.lmod (breath.c) */
     if (snd.fm_last[0] != cur.p[P_FB] || snd.fm_last[1] != cur.p[P_INDEX] || snd.fm_last[2] != cur.p[P_MASSA])

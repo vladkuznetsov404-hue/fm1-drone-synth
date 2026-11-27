@@ -251,7 +251,7 @@ static void sc_glo(uint32_t y)                   /* 240 x 124 */
     for (i = 0; i < 3; i++) {
         int32_t x0 = 3 + i * 79;
         cv_rrect(x0, 2, 75, 120, 6, T_SURF, T_BG);
-        cv_text_in(x0, 6, 75, &AF_S, i == 0 ? "MIDI CH" : i == 1 ? "TRS IN" : "VOLUME", T_MID, T_SURF);
+        cv_text_in(x0, 6, 75, &AF_S, i == 0 ? "MIDI CH" : i == 1 ? "TRS IN" : "MASTER", T_MID, T_SURF);
     }
     for (k = 0; k < 16; k++) {                   /* sixteen lamps: the channel lit (OMNI: all of them) */
         int32_t cx = 3 + 14 + (k % 4) * 16, cy = 36 + (k / 4) * 16, on = ch == 0 || ch == k + 1;
@@ -328,5 +328,92 @@ static void sc_corona(uint32_t y)                /* 240 x 124 */
     cv_text_r(234, 4, &AF_S, "SHIMMER = GHOSTS", T_DIM, T_BG);
     cv_text(6, 109, &AF_S, "BLOOM = RINGS", T_DIM);
     cv_text_r(234, 109, &AF_S, "LEVEL = CORE", T_DIM, T_BG);
+    cv_blit(0, y);
+}
+
+/* ---- GEN (SCL 2) ---- */
+static void sc_gen(uint32_t y)                   /* 240 x 124 */
+{
+    static int16_t tx[10], ty[10];               /* the drift's trail: a new point every picture */
+    static uint8_t tn;
+    int32_t cx = 62, cy = 62, life = set.g[G_XLIFE], span = set.g[G_XSPAN], sc = set.g[G_SCALE], len, r, k, i, a, px, py;
+    uint32_t keys = gen_pub_keys & ~0u, held = 0;
+    char b[24], t[12];
+    static const uint8_t PENT[5] = {0, 3, 5, 7, 10};
+    len = sc >= 1 && sc <= 6 ? (int32_t)SC_LEN[sc] : 5;
+    for (i = 0; i < (int32_t)NV; i++)            /* what the generator holds and still sounds */
+        if (snd.held[i]) {
+            int32_t kk = note_key(snd.held[i]);
+            if (kk >= 0)
+                held |= 1u << kk;
+        }
+    keys &= held;
+    cv_begin(240, 124, T_BG);
+    for (k = 0; k < span; k++) {                 /* one ring an octave, a dot a degree */
+        r = 8 + (k + 1) * 44 / span;
+        sc_ring(cx, cy, r, T_LINE);
+        for (i = 0; i < len; i++) {
+            int32_t key = sc >= 1 && sc <= 6 ? k * len + i : 12 * k + PENT[i];
+            int32_t on = key <= 26 && ((keys >> key) & 1u);
+            a = 30 - i * 120 / len;
+            px = cx + (r * cs(a) >> 7);
+            py = cy - (r * sn(a) >> 7);
+            if (key > 26)
+                continue;
+            sc_disc(px, py, on ? 5 : 2, on ? T_ACCENT : T_DIM);
+        }
+    }
+    if (life) {                                  /* the hand: once round to the next move */
+        a = 30 - (int32_t)gen_pub_prog * 120 / 255;
+        cv_line_t(cx, cy, cx + (52 * cs(a) >> 7), cy - (52 * sn(a) >> 7), T_THEME, 1);
+    }
+    sc_disc(cx, cy, 3, life ? T_THEME : T_DIM);
+    if (life) {
+        int32_t ms = 20000 / (1 + life * life / 400);
+        str_cpy(b, "EVERY ", sizeof b);
+        num(t, ms / 1000);
+        str_cat(b, t, sizeof b);
+        str_cat(b, ".", sizeof b);
+        num(t, ms / 100 % 10);
+        str_cat(b, t, sizeof b);
+        str_cat(b, " S", sizeof b);
+        cv_text(130, 2, &AF_M, b, T_THEME);
+        if (set.g[G_CHORD] > 0 || set.g[G_LOW] > 0)
+            str_cpy(b, "CHANGES CHORDS", sizeof b);
+        else {
+            str_cpy(b, "HOLDS ", sizeof b);
+            num(t, set.g[G_XNOTES]);
+            str_cat(b, t, sizeof b);
+            str_cat(b, set.g[G_XNOTES] == 1 ? " NOTE" : " NOTES", sizeof b);
+        }
+        cv_text(130, 22, &AF_S, b, T_MID);
+    } else {
+        cv_text(130, 2, &AF_M, "ASLEEP", T_DIM);
+        cv_text(130, 22, &AF_S, "LIFE UP TO START", T_MID);
+    }
+    cv_rrect(128, 42, 108, 78, 6, T_SURF, T_BG);   /* the drift field: the cutoff across, the fuzz up; the spin rings the dot */
+    cv_text(134, 46, &AF_S, "DRIFT", T_DIM);
+    px = 182 + GDR(gdr.cut) * 46 / 30;
+    py = 84 - GDR(gdr.gain) * 26 / 8200;
+    px = px < 136 ? 136 : px > 228 ? 228 : px;
+    py = py < 58 ? 58 : py > 112 ? 112 : py;
+    if (fm1_ms / 100u != (uint32_t)tn) {
+        for (i = 9; i > 0; i--) {
+            tx[i] = tx[i - 1];
+            ty[i] = ty[i - 1];
+        }
+        tx[0] = (int16_t)px;
+        ty[0] = (int16_t)py;
+        tn = (uint8_t)(fm1_ms / 100u);
+    }
+    for (i = 9; i > 0; i--)
+        if (tx[i] && set.g[G_XDRIFT])
+            sc_disc(tx[i], ty[i], 1 + (i < 4), i < 4 ? T_MID : T_DIM);
+    if (set.g[G_XDRIFT]) {
+        int32_t ro = 5 + (gdr.spin < 0 ? -gdr.spin : gdr.spin) / 65536 / 5;
+        sc_disc(px, py, 3, T_ACCENT);
+        sc_ring(px, py, ro > 12 ? 12 : ro, T_THEME);
+    } else
+        cv_text_in(128, 78, 108, &AF_S, "STILL", T_DIM, T_SURF);
     cv_blit(0, y);
 }

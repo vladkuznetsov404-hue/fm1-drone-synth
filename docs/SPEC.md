@@ -26,14 +26,15 @@ The FM-1 has 27 keys, 14 buttons (FX SCL ENV LFO EDIT GLO HOME SAVE ARP SEQ PLAY
 | Keys (27) | press | **Latch**: a key not sounding starts its note, which drones until the same key is pressed again (then it fades out with the release time). At most 4 notes at once; a 5th steals the oldest. |
 | OCT− / OCT+ | press | Octave of the keys, −3..+1 (default −2). LEDs as the platform does. |
 | OCT− + OCT+ | 5 s hold | Reserved (platform recovery). |
+| MASTER (the pot) | turn | The output volume: read in the main loop, smoothed; the knob is the truth (there is no volume in the menus). |
 | KNOB 1 | turn (HOME) | **MASSA** 0..100: drive of the fuzz + sub level + engine feedback, together. |
 | KNOB 2 | turn (HOME) | **BEATS** 0..100: detune spread of the layers (slow beating at low values, sour chorus at high). On the QUASAR's HOME it is **SPIN** 0..100 (see Sound). |
 | KNOB 3 | turn (HOME) | **DARK** 0..100: low-pass cutoff (100 = darkest). |
 | KNOB 4 | turn (HOME) | **BREATH** 0..100: depth (and a little rate) of the slow LFOs on cutoff, pitch and level. |
-| KNOB 1..4 | turn (other pages) | The four parameters of that page (see Screens). |
+| KNOB 1..4 | turn (other pages) | The four parameters of that page (see Screens). **Acceleration**: a fast turn takes bigger steps (under 15 clicks a second one unit, 15..30 two, 30..50 four, above eight); only values with 40+ steps accelerate, choices (cabinet, scale, root, shape ...) keep a click for a step. |
 | SELECT | turn | The **body**: BLACK HOLE ↔ QUASAR (toast with its name; its own sounds, colours, FX page and HOME picture; each body keeps its unsaved edits while you switch). It does not turn pages: every page has its own button. |
 | ALGORITHM | turn | Engine: **SAW** (detuned saws + sub) or **FM** (feedback FM + sub). The switch crossfades, notes keep sounding. On the SLICE pages it is the **jog**: each click is a push on the time (the speed leaps ±12.5 % and settles back). |
-| PRESETS | turn | Pick a sound slot 1..16 and load it (the held notes keep sounding with the new sound; unsaved edits of the sound before are dropped). |
+| PRESETS | turn | Pick a sound slot 1..16 and load it (the held notes keep sounding with the new sound; unsaved edits of the sound before are dropped). A **list of the 16 sounds** with their names is drawn over the page while it turns (the picked one highlighted), for 2.5 s after the last click or until a button is pressed. |
 | HOME | press | HOME page. |
 | EDIT | press | EDIT page (engine). |
 | FX | press | FX page (fuzz, cabinet). |
@@ -42,11 +43,12 @@ The FM-1 has 27 keys, 14 buttons (FX SCL ENV LFO EDIT GLO HOME SAVE ARP SEQ PLAY
 | SEQ | tap | SLICE page; on SLICE: SLICE 2, and back. |
 | SEQ | hold | **Pad mode**: the keys are the cassette's 15 pads (not notes) while SEQ is down; a SEQ press in which a pad was played does not change the page. Pads: 1 BACK (reverse), 2 SLOW (half), 3 FAST (double), 4 STILL (stop), 5..7 CUT 8 / 16 / 32 (a slice of the loop repeats), 8 HOLD (freeze), 9 TEAR (chew), 10 +12, 11 −12, 12 +7, 13 LEAP (skip), 14 ORIGIN (restart), 15 RIFT (latches the echo's freeze). Pads 1..14 act while held. |
 | GLO | press | GLO page (global settings: the sky of the body, MIDI channel, TRS MIDI IN, volume). |
-| SCL | tap | The scale page (SCALE, ROOT, CHORD, LOW ROOT). |
+| SCL | tap | The scale page (SCALE, ROOT, CHORD, LOW ROOT); tapped again: the **generator** page (LIFE, NOTES, SPAN, DRIFT); again: back. |
 | SCL | hold 0.8 s | **Silence**: release every latched note (fade out); toast SILENCE. |
 | SAVE | press | Save dialog: the current sound into the slot shown (PRESETS picks it), confirm with SAVE again or OCT+, cancel with OCT−. |
 | REC | press | Cassette (acts at once): on an empty tape start recording (the first pass sets the loop length); while recording close the loop and play; while the tape plays toggle **overdub**; when stopped play with overdub. |
 | REC | hold 1 s | Erase the tape. |
+| REC held + the leftmost key (F3) | press | Erase the tape at once. While REC is down the keys make no notes (as under SEQ). |
 | PLAY | press | Cassette: play / stop (while recording: close the loop and play; on an empty tape: nothing). Stop runs the **tape brake** (the loop slows down to silence over the BRAKE time); play starts it again (spins up). |
 | ARP | press | The tape echo: ANOMALY, and again ANOMALY 2, and back. |
 
@@ -101,6 +103,11 @@ of HARSH has no dial strip (the combo's knobs are the dials). A value that does 
   are latched (each sounding voice glides to the same key's note in the new scale, by SLIDE) and re-morphs a latched
   chord from its key; changing CHORD or LOW ROOT re-voices it as before. Turning SCALE back to MANUAL puts the keys
   back to their free notes.
+- **GEN** (SCL tapped again; the generator): LIFE (0..100, 0 = off), NOTES (1..4), SPAN (1..4 octaves), DRIFT (0..100). The
+  picture: rings, one an octave (as many as SPAN), a dot a degree of the scale (MANUAL: the minor pentatonic); the notes the
+  generator holds are lit; a hand goes once round to the next move; to the right the time between moves (EVERY 2.0 S) and
+  what it does (HOLDS 2 NOTES, CHANGES CHORDS), under it the drift field: a dot with a trail wandering (cutoff across,
+  fuzz up, the spin as a ring round it).
 - **ENV** (a picture of the envelope): swell (attack 0..10 s), release 0..20 s, **SLIDE** (0..6 s, the time a note
   takes to move to its place in the next chord, a setting kept with the others); the curve is drawn with a note's
   swell and fall, and SLIDE as a glide between two levels. The fourth dial is empty.
@@ -136,8 +143,8 @@ of HARSH has no dial strip (the combo's knobs are the dials). A value that does 
   ¼ speed an overdub writes nothing (the head leaves a cell too slowly). **SLICE 2**: BRAKE time (0.2..4 s), DIRECTION
   (forward / reverse), LOCK (on: SPEED changes the time only, the pitch stays), DROPOUT (0..100, how often the tape
   drops out). The picture: the 15 pads (see SEQ), lit while on.
-- **GLO** (a picture of the settings: the body's sky with a corona round the volume): MIDI channel (omni / 1..16),
-  TRS MIDI IN on/off, master volume, a version line (in the title). The body is no longer set here: SELECT turns it.
+- **GLO** (a picture of the settings: the body's sky with a corona round the volume, which is the MASTER knob's, not a dial): MIDI channel (omni / 1..16),
+  TRS MIDI IN on/off, a version line (in the title). The body is no longer set here: SELECT turns it.
 - **SAVE** dialog: SAVE, the target slot and the name now in it, the keys (SAVE / OCT+ yes, OCT− no, PRESETS another
   slot); knobs and other buttons do nothing while it is open.
 
@@ -192,6 +199,19 @@ Each page draws only what changed (the platform's lazy drawing).
   by a fraction of the gap per block, so turning it spins the rotor up and down, the "вжух"), and the depth ramps in
   over the first 20 % of the knob. The gains are computed once per block (Q15) and slid per sample (Q20): no zipper,
   no divides in the sample loop. The LFO can target it.
+- **Generator** (`sound.c`, `snd_gen`, SCL 2; LIFE > 0): it plays the latching keys by itself. Every so often (LIFE 1..100:
+  `20 s / (1 + LIFE² / 400)`, ~20 s .. ~0.8 s, each time 0.6 .. 1.4 times that; turning LIFE reschedules at once) it
+  does one thing, as a finger would: latches a note, releases one of its own, or both (a move). With room (fewer than
+  NOTES held) it adds 65 % of the time and otherwise releases; with NOTES held it moves (release + add) 50 % and thins
+  out 50 %. The note is a random step of up to 3 degrees from the last one, within SPAN octaves of the scale's start
+  (MANUAL: the minor pentatonic from the keyboard's first note), 15 % of the time a root of a random octave. With a
+  chord mode on (CHORD or LOW ROOT) it changes chords instead (a new root, 25 % of the time the end of the sounding
+  chord). It acts through the same key presses as the player (`snd_press` with the key), so SLIDE, the scales, chords and
+  MIDI out work as always, and it only ever releases keys it latched itself (the player's notes stay). LIFE 0 stops it
+  where it is. The ISR cost is a counter a block; the work comes once per move.
+- **DRIFT** (`breath.c`, `gdr_block`; works with LIFE 0): every 3..7 s three new targets are drawn, within DRIFT × ±30
+  DARK steps, ±25 % fuzz gain and ±40 SPIN steps; the values glide there with a time constant of ~1.5 s (in Q16, rounded
+  so that 0 is 0); SPIN drifts only where SPIN is above 0.
 - **Swell / release**: per-note amplitude ramps (attack 0..10 s, release 0..20 s, at least ~6 ms); no clicks on
   start, steal or stop. A stolen voice keeps its phase and level and changes pitch, then swells from there. A key or
   note-on whose note is still releasing swells that voice back up.
@@ -274,12 +294,13 @@ REC presses).
   SAVE writes the bank of the body that is on. A fresh unit: the BLACK HOLE's slot 1 is INIT and 2..16 the factory
   sounds; the QUASAR has its own INIT and 15 factory sounds, with a SPIN set on each (a table in `data.c`). An older
   sound reads with SPIN 0 and the LFO at SINE, PITCH, DEPTH 0 (off).
-- **Settings** (MIDI channel, TRS MIDI IN, volume, octave, last sound, MODE (the body), the cassette's values SPEED
+- **Settings** (MIDI channel, TRS MIDI IN, volume (written, but the MASTER knob sets it at power-on and whenever it moves), octave, last sound, MODE (the body), the cassette's values SPEED
   (a percent now, 10..300; an old ½..1 value reads as the same percent), PITCH, LOCK, DIRECTION, DECAY (FORGET), WEAR (AGE),
   BRAKE, DROPOUT, SLIDE, the tape echo's TIME, REPEATS, ECHO, HEADS, WOBBLE (ORBIT), DULL, GLIDE, TAPE DRIVE, the
-  grains' GRAINS, SIZE, DENSITY, GRAIN PITCH, SCATTER, REVERSE, GRAIN FEED, **MASS** (appended last), and the scale's
-  SCALE, ROOT, CHORD, LOW ROOT): one record (store slot 0), with its own value count (40 now); new values are only
-  ever appended. A record without MASS reads it at 25.
+  grains' GRAINS, SIZE, DENSITY, GRAIN PITCH, SCATTER, REVERSE, GRAIN FEED, **MASS**, and the scale's
+  SCALE, ROOT, CHORD, LOW ROOT, and the generator's LIFE, NOTES, SPAN, DRIFT (appended last): one record (store slot 0),
+  with its own value count (44 now); new values are only ever appended. A record without MASS reads it at 25; without
+  the generator's values LIFE 0, NOTES 2, SPAN 2, DRIFT 0 (off).
 - All are written by SAVE (confirmed in the dialog), never in the background: a save fades the audio ~100 ms.
   Every value read back is range-checked; a bad one takes its default, the rest are kept.
 - Not stored: the latched notes, the cassette.
@@ -291,7 +312,16 @@ REC presses).
   drops what arrives over TRS.
 - A lost stream (the input ring overflowed) only loses toggles, since note-offs do nothing: the drones go on, SCL
   held silences them.
-- No CC, no clock, no MIDI out in v1.
+- **MIDI out over USB** (`snd_midi_out`, once per audio block): the notes the keys play go out as note-on (velocity 100) when
+  they start and note-off when they are released, on the channel set in GLO (OMNI: channel 1); a channel change first
+  releases the notes on the old one. The generator's notes go out like the keys'. A note that came in over MIDI is **not**
+  sent back (a host that routes the FM-1's output to its input would latch and unlatch it in a loop). The four macros go
+  out as **CC 20 MASSA, 21 BEATS, 22 DARK, 23 BREATH** (0..127) when they change, one per block at most. The platform's
+  ring (64 events) drops what a host does not read.
+- **USB audio is not built**: the platform has the code (`FELUCCA_UAC`, an isochronous endpoint) but it is off in the kit, and
+  turning it on changes the USB descriptors that the update path relies on. Without recovery hardware it is not worth the
+  risk of an install that cannot be replaced; it waits for an FM-1-transporter (or the unit's headphone out into an interface).
+- No clock in, no MIDI CC in, in v1 (clock and CC in are read by the platform but the app ignores them).
 
 ## Open questions
 
@@ -310,8 +340,8 @@ REC presses).
 
 ## Out of scope for v1
 
-Step sequencer, arpeggiator, saving the tape, MIDI CC / clock / out, true stereo (the chorus and reverb are mono),
-audio input (the FM-1 has none).
+Step sequencer, arpeggiator, saving the tape, MIDI CC / clock in, USB audio (see MIDI), true stereo (the chorus and
+reverb are mono; only SPIN pans), audio input (the FM-1 has none).
 
 ## Milestones
 
@@ -343,3 +373,7 @@ audio input (the FM-1 has none).
     two pages, HEADS and the grains hidden and derived from MASS; SCL live (any scale but MANUAL re-maps the latched
     keys at once); the SLICE's SPEED X0.10..X3.00 with FORGET and AGE. Host-tested with sanitizers and mutation
     checks; the speaker, the ISR load and the frame rate wait for the unit.
+13. **Hands-on round** (built): the MASTER knob is the volume; MIDI out over USB (notes and the four macros); the list of
+    sounds while PRESETS turns; knob acceleration; REC + the leftmost key erases the loop; the SCL generator (LIFE, NOTES,
+    SPAN, DRIFT). USB audio waits for recovery hardware. All host-tested; the knob's range and feel, the MIDI on a real host
+    and the generator's taste wait for the unit.

@@ -13,7 +13,7 @@
  * Lazy drawing: each area has a signature of what it shows (area_sig) and is drawn only when that changes; a page
  * change or app_redraw clears the screen and draws everything. */
 enum { PG_HOME, PG_EDIT, PG_FX, PG_ENV, PG_LFO, PG_SCL, PG_DELAY, PG_DELAY2, PG_TAPE, PG_TAPE2, PG_GLO,
-       PG_LFO2, NPG };
+       PG_LFO2, PG_GEN, NPG };
 enum { A_HEAD, A_SOUND, A_NOTES, A_TAPE, A_SCENE, A_DIALS, NA };
 
 #define C_BLANK (-1)             /* a row with nothing on it */
@@ -32,19 +32,20 @@ static const int16_t CELLS[NPG][4] = {
     [PG_DELAY2] = {C_G + G_DWOB, C_G + G_DDULL, C_G + G_DGLIDE, C_G + G_DDRV},
     [PG_TAPE] = {C_G + G_SPEED, C_G + G_PITCH, C_G + G_DECAY, C_G + G_WEAR},
     [PG_TAPE2] = {C_G + G_BRAKE, C_G + G_DIR, C_G + G_LOCK, C_G + G_DROP},
-    [PG_GLO] = {C_G + G_CH, C_G + G_TRS, C_G + G_VOL, C_BLANK},
+    [PG_GLO] = {C_G + G_CH, C_G + G_TRS, C_BLANK, C_BLANK},   /* the volume is the MASTER knob */
     [PG_LFO2] = {P_BREATH, P_TOPITCH, P_TOCUT, P_TOLEVEL},
+    [PG_GEN] = {C_G + G_XLIFE, C_G + G_XNOTES, C_G + G_XSPAN, C_G + G_XDRIFT},
 };
 static const int16_t CELLS_FM[4] = {P_RATIO, P_FB, P_INDEX, P_SUB};
 static const int16_t CELLS_SHOE_HOME[4] = {P_MASSA, P_SPIN, P_REVERB, P_DARK};   /* the quasar's four: mass, spin, bloom, dark */
 static const int16_t CELLS_SHOE_FX[4] = {P_DRIVE, P_CHORUS, P_REVERB, P_LEVEL};   /* SHOEGAZE's FX */
 static const char *const PG_TITLE[NPG] = {"HOME", "EDIT", "FX", "ENV", "LFO", "SCL", "ANOMALY", "ANOMALY 2",
-                                          "SLICE", "SLICE 2", "GLO", "LFO 2"};
+                                          "SLICE", "SLICE 2", "GLO", "LFO 2", "GENERATOR"};
 /* what a page says in its foot while no note is latched (the foot has room) */
 static const char *const PG_HINT[NPG] = {0, "ALGO: SAW / FM", "KNOBS = THE AMP", "SWELL: SLOW IS HEAVY", "LFO AGAIN: BREATH",
                                          "ENV > SLIDE: CHORD GLIDE", "ARP: NEXT PAGE",
                                          "ARP: BACK TO THE FIRST", "ALGO: NUDGE THE TIME", "SEQ TAP: OTHER PAGE",
-                                         "SELECT: THE BODY", "LFO: BACK TO THE WAVE"};
+                                         "SELECT: THE BODY", "LFO: BACK TO THE WAVE", "SCL AGAIN: THE SCALE"};
 static const uint8_t HEAD_ORDER[7] = {1, 2, 4, 3, 5, 6, 7};   /* HEADS as the knob steps through it: one head, two, three */
 
 static void app_palette(void);
@@ -54,10 +55,12 @@ static int page_strip(uint32_t p) { return page_scene(p) && !(p == PG_FX && set.
 static int page_delay(uint32_t p) { return p >= PG_DELAY && p <= PG_DELAY2; }
 
 static struct {
-    uint8_t page, dlg, dlg_slot, full;
+    uint8_t page, dlg, dlg_slot, full, lst;   /* lst: the list of sounds is over the page (PRESETS turned) */
+    uint32_t lst_until, lst_drawn;
     int8_t saved;                /* the last SAVE: 1 saved, -1 failed, 0 none yet */
     uint32_t last_buttons, rec_down, toast_until;
     uint8_t rec_held, rec_used;
+    uint32_t rec_keys;           /* the keys at the last frame (REC + the leftmost key) */
     uint32_t scl_down, seq_pads_prev;   /* SCL's press time; the pads at the last frame */
     uint8_t scl_used, seq_down, seq_used;
     const char *toast;
@@ -172,6 +175,13 @@ static uint32_t scene_sig(uint32_t h)            /* what the page's picture show
             h = h_add(h, (uint32_t)set.g[CELLS[PG_SCL][i] - C_G]);
         h = h_add(h, held_sig());
         h = h_add(h, (uint32_t)set.g[G_OCT]);
+        break;
+    case PG_GEN:                                 /* the hand runs: a new picture every ~100 ms */
+        h = h_add(h, fm1_ms / 100u);
+        for (i = 0; i < 4u; i++)
+            h = h_add(h, (uint32_t)set.g[CELLS[PG_GEN][i] - C_G]);
+        h = h_add(h, held_sig());
+        h = h_add(h, (uint32_t)set.g[G_SCALE] | (uint32_t)(set.g[G_CHORD] > 0 || set.g[G_LOW] > 0) << 8);
         break;
     case PG_DELAY: case PG_DELAY2:               /* the tape moves: a new picture every ~70 ms */
         h = h_add(h, fm1_ms / 70u);
@@ -428,6 +438,7 @@ static void draw_area(uint32_t a)
         case PG_EDIT: sc_edit(26); break;
         case PG_GLO: sc_glo(26); break;
         case PG_SCL: sc_scl(26); break;
+        case PG_GEN: sc_gen(26); break;
         case PG_DELAY: case PG_DELAY2: sc_delay(26); break;
         case PG_TAPE: sc_cassette(26); break;
         case PG_TAPE2: sc_pads(26); break;
@@ -480,6 +491,38 @@ static void draw_dialog(void)
     cv_blit(0, 160);
 }
 
+/* The list of the 16 sounds of the body playing: the PRESETS knob turns the highlight (and loads, as it always did); it
+ * stays 2.5 s after the last click, or until a button is pressed. Two columns of eight. */
+static uint32_t lst_sig(void) { return h_add(h_add(0x115Eu, (uint32_t)set.g[G_SLOT]), (uint32_t)set.g[G_MODE]); }
+
+static void draw_list(void)
+{
+    char b[24];
+    int32_t i, j;
+    lcd_fill(0, 0, 240, 240, T_BG);
+    cv_begin(240, 28, T_BG);
+    cv_text(8, 4, &AF_M, "SOUNDS", T_THEME);
+    cv_text_r(232, 8, &AF_S, MODE_NAME[set.g[G_MODE]], T_MID, T_BG);
+    cv_blit(0, 4);
+    for (i = 0; i < NSND; i++) {
+        int32_t col = i / 8, row = i % 8, x = 4 + col * 118, on = i == set.g[G_SLOT];
+        cv_begin(114, 22, T_BG);
+        if (on)
+            cv_rrect(0, 0, 114, 20, 4, T_THEME, T_BG);
+        num(b, i + 1);
+        cv_text(5, 2, &AF_S, b, on ? T_BG : T_MID);
+        memcpy(b, bank.s[i].name, NAME_LEN);
+        b[NAME_LEN] = 0;
+        for (j = NAME_LEN - 1; j >= 0 && b[j] == ' '; j--)
+            b[j] = 0;
+        cv_text(26, 2, &AF_S, b, on ? T_BG : T_TEXT);
+        cv_blit((uint32_t)x, (uint32_t)(34 + row * 22));
+    }
+    cv_begin(240, 20, T_BG);
+    cv_text_in(0, 4, 240, &AF_S, "PRESETS: PICK    SAVE: STORE", T_MID, T_BG);
+    cv_blit(0, 218);
+}
+
 static void ui_draw(void)
 {
     uint32_t a, s;
@@ -493,6 +536,15 @@ static void ui_draw(void)
             ui.full = 0;
             ui.dlg_drawn = s;
             draw_dialog();
+        }
+        return;
+    }
+    if (ui.lst) {
+        s = lst_sig();
+        if (ui.full || s != ui.lst_drawn) {
+            ui.full = 0;
+            ui.lst_drawn = s;
+            draw_list();
         }
         return;
     }
@@ -522,7 +574,7 @@ static void ui_page(uint32_t p)
 
 static void ui_leds(void)
 {
-    static const uint8_t PAGE_BTN[NPG] = {B_HOME, B_EDIT, B_FX, B_ENV, B_LFO, B_SCL, B_ARP, B_ARP, B_SEQ, B_SEQ, B_GLO, B_LFO};
+    static const uint8_t PAGE_BTN[NPG] = {B_HOME, B_EDIT, B_FX, B_ENV, B_LFO, B_SCL, B_ARP, B_ARP, B_SEQ, B_SEQ, B_GLO, B_LFO, B_SCL};
     uint32_t i, on[NB] = {0}, keys = 0;
     on[PAGE_BTN[ui.page]] = !ui.dlg;
     on[B_SAVE] = ui.dlg;
@@ -544,6 +596,52 @@ static void ui_leds(void)
         fm1_led_key(14u + i, (int)((keys >> i) & 1u));
 }
 
+/* The MASTER pot is the volume (the knob is the truth: a saved VOLUME is not used). It is polled here, in the main
+ * loop (the ADC is polled, 10 bit), every second frame; a one-pole (half the gap per read) takes the jitter off, and
+ * G_VOL (0..100; raw 12..1000, a small dead zone at both ends) follows it with a hysteresis of 0.5, so a pot that sits
+ * between two values does not flicker and the ends are reached. */
+static struct { int32_t f; uint8_t init, skip; } mst;
+static void master_poll(void)
+{
+    int32_t raw, v, d;
+    if (mst.skip++ & 1u)                         /* every second frame: the conversion is not free */
+        return;
+    raw = fm1_adc_read(FM1_ADC_MASTER);
+    if (raw < 0)
+        return;
+    raw <<= 8;
+    mst.f = mst.init ? mst.f + ((raw - mst.f) >> 1) : raw;
+    mst.init = 1;
+    v = (mst.f - 12 * 256) * 100 / 988;          /* Q8 volume: 0..100 * 256 */
+    v = v < 0 ? 0 : v > 100 * 256 ? 100 * 256 : v;
+    d = v - set.g[G_VOL] * 256;
+    if (d > 128 || d < -128)
+        set.g[G_VOL] = (int16_t)((v + 128) >> 8);
+}
+
+/* Knob acceleration: a fast turn takes bigger steps, a slow one stays at one unit. The speed is the clicks a second
+ * (clicks / the time since the last turn of this knob, half-averaged with the speed before); under 15 a second one
+ * unit per click, 15..30 two, 30..50 four, above eight. Only values with a wide range (40+ steps) are accelerated: the
+ * choices (cabinet, scale, shape ...) keep a click for a step. */
+static struct { uint32_t t[4]; int32_t r[4]; } ac;
+static uint8_t ac_on = 1;                        /* (the host tests switch it off where they count exact steps) */
+static int32_t accel(uint32_t e, int32_t n, const par_t *p)
+{
+    int32_t a = n < 0 ? -n : n, rate, m;
+    uint32_t dt;
+    if (!n)
+        return 0;
+    dt = fm1_ms - ac.t[e];
+    ac.t[e] = fm1_ms;
+    dt = dt < 8u ? 8u : dt;
+    rate = a * 1000 / (int32_t)dt;
+    ac.r[e] = dt > 500u ? 0 : (ac.r[e] + rate) >> 1;   /* (a pause: the speed starts again from nothing) */
+    if (!ac_on || !p || p->hi - p->lo < 40)
+        return n;
+    m = ac.r[e] < 15 ? 1 : ac.r[e] < 30 ? 2 : ac.r[e] < 50 ? 4 : 8;
+    return n * m;
+}
+
 static void ui_frame(void)
 {
     uint32_t b = fm1_in.buttons, pr = b & ~ui.last_buttons, rl = ~b & ui.last_buttons, i;
@@ -554,6 +652,7 @@ static void ui_frame(void)
     ui.last_buttons = b;
     for (i = 0; i < 4u; i++)
         k[i] = panel_enc(EN_K1 + i);
+    master_poll();
     dly_mass_apply();
     tape_frame();
     if (scope.ready) {                           /* a picture taken: show it, ask for the next in ~100 ms */
@@ -589,6 +688,10 @@ static void ui_frame(void)
         return;
     }
 
+    if (ui.lst && (pr || fm1_ms > ui.lst_until)) {   /* any button, or the time: back to the page */
+        ui.lst = 0;
+        ui.full = 1;
+    }
     if (PRESSED(B_HOME)) ui_page(PG_HOME);
     if (PRESSED(B_EDIT)) ui_page(PG_EDIT);
     if (PRESSED(B_FX)) ui_page(PG_FX);
@@ -623,7 +726,7 @@ static void ui_frame(void)
         toast("SILENCE");
     }
     if (RELEASED(B_SCL) && !ui.scl_used)
-        ui_page(PG_SCL);
+        ui_page(ui.page == PG_SCL ? PG_GEN : PG_SCL);   /* again: the generator */
     if (alg) {
         if (ui.page == PG_TAPE || ui.page == PG_TAPE2) {   /* the tape's jog: a nudge of the speed (a push on the reel) */
             int32_t n = alg > 3 ? 3 : alg < -3 ? -3 : alg;
@@ -638,10 +741,14 @@ static void ui_frame(void)
         int16_t s = clamp16(set.g[G_SLOT] + pre, 0, NSND - 1);
         set.g[G_SLOT] = s;
         cur = bank.s[s];                         /* the held notes keep sounding with the new sound */
+        if (!ui.lst)
+            ui.full = 1;
+        ui.lst = 1;                              /* the list of sounds, over the page, for 2.5 s */
+        ui.lst_until = fm1_ms + 2500u;
     }
     for (i = 0; i < 4u; i++)
         if (k[i])
-            cell_add(cell(ui.page, i), k[i]);
+            cell_add(cell(ui.page, i), accel(i, k[i], cell_par(cell(ui.page, i))));
     if ((uint8_t)set.g[G_MODE] != mode0) {       /* another body: its own sounds, colours and picture; each keeps its edits */
         workm[mode0] = cur;
         workslot[mode0] = (uint8_t)set.g[G_SLOT];
@@ -661,6 +768,14 @@ static void ui_frame(void)
         ui.rec_used = 1;
         toast("TAPE ERASED");
     }
+    /* REC held with the leftmost key (F3): erase the loop at once. While REC is down the keys make no notes (as under SEQ). */
+    if (panel_held(B_REC) && (fm1_in.notes & ~ui.rec_keys & 1u) && !ui.rec_used) {
+        tape_erase();
+        ui.rec_used = 1;
+        toast("TAPE ERASED");
+    }
+    ui.rec_keys = fm1_in.notes;
+    snd.pad_mode = (uint8_t)(ui.seq_down || panel_held(B_REC));
     if (PRESSED(B_PLAY)) tape_play();
     if (PRESSED(B_SAVE)) {
         ui.dlg = 1;

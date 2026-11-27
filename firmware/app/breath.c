@@ -68,6 +68,38 @@ static int32_t br_sine(uint32_t ph)   /* the parabolic sine of the sub: 4 u (1 -
     return y > 32767 ? 32767 : y;
 }
 
+/* The generator's DRIFT (SCL 2): the cutoff, the fuzz's gain and the spin wander by themselves. Every 3..7 s three new
+ * targets are drawn (within DRIFT x +-30 cutoff steps, +-25 % gain, +-40 spin steps); the values glide there with a
+ * time constant of ~1.5 s (a one-pole a block, in Q16). DRIFT 0 draws nothing and everything glides back to 0. */
+static struct { int32_t cut, gain, spin, tc, tg, ts; uint32_t rnd, left; } gdr;
+#define GDR(x) (((x) + 32768) >> 16)             /* Q16 to whole units, rounded (a value near 0 is 0, not -1) */
+static int32_t gdr_rand(int32_t m)               /* -m .. +m */
+{
+    gdr.rnd = gdr.rnd ? gdr.rnd : 0x2545F491u;
+    gdr.rnd ^= gdr.rnd << 13;
+    gdr.rnd ^= gdr.rnd >> 17;
+    gdr.rnd ^= gdr.rnd << 5;
+    return (int32_t)(gdr.rnd % (2u * (uint32_t)m + 1u)) - m;
+}
+
+static void gdr_block(void)
+{
+    int32_t d = set.g[G_XDRIFT];
+    if (!d) {
+        gdr.tc = gdr.tg = gdr.ts = 0;
+        gdr.left = 0;
+    } else if (!gdr.left) {
+        gdr.tc = gdr_rand(d * 30) * 655;         /* +-d x 0.30 steps, Q16 */
+        gdr.tg = gdr_rand(d * 82) * 65536;       /* +-d x 82 of 32 768 (25 % at 100), Q16 */
+        gdr.ts = gdr_rand(d * 40) * 655;         /* +-d x 0.40 steps, Q16 */
+        gdr.left = (uint32_t)(4000 + gdr_rand(2500) + 2500);
+    } else
+        gdr.left--;
+    gdr.cut += (gdr.tc - gdr.cut) >> 11;
+    gdr.gain += (gdr.tg - gdr.gain) >> 11;
+    gdr.spin += (gdr.ts - gdr.spin) >> 11;
+}
+
 static void lfo_block(void)      /* once per block: the LFO's wave and what it moves */
 {
     int32_t t, v, amt = cur.p[P_LAMT], q, d;
@@ -106,11 +138,12 @@ static void breath_block(void)   /* once per block, before the voices and the ch
     br.ph[1] += br.inc + (br.inc >> 1) - (br.inc >> 3);   /* x 1.375 */
     br.ph[2] += br.inc - (br.inc >> 2);                   /* x 0.75 */
     lfo_block();
+    gdr_block();
     br.pm = (br_sine(br.ph[0]) * br.a_pitch >> 15) * 16 + lf.pm;  /* (32 767 * 4 845 < 2^31) */
-    idx = cur.p[P_DARK] + ((br_sine(br.ph[1]) * br.a_cut >> 15) >> 8) + lf.cut;   /* (32 767 * 6 400 < 2^31) */
+    idx = cur.p[P_DARK] + ((br_sine(br.ph[1]) * br.a_cut >> 15) >> 8) + lf.cut + GDR(gdr.cut);   /* (32 767 * 6 400 < 2^31) */
     fx.dark_a = DARK_A[idx < 0 ? 0 : idx > 100 ? 100 : idx];
     fx.lmod = 32768 + (br_sine(br.ph[2]) * br.a_lvl >> 15) + lf.lvl;
     fx.lmod = fx.lmod < 0 ? 0 : fx.lmod;
-    idx = (fx.gain >> 3) * (32768 + lf.gmod) >> 12;   /* the fuzz's gain with the LFO (Q8; the shaper's input stays < 2^31) */
+    idx = (fx.gain >> 3) * (32768 + lf.gmod + GDR(gdr.gain)) >> 12;   /* the fuzz's gain with the LFO (Q8; the shaper's input stays < 2^31) */
     fx.gainm = idx > 70000 ? 70000 : idx < 0 ? 0 : idx;
 }

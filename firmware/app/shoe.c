@@ -160,7 +160,7 @@ static volatile uint16_t spin_hz100; /* ... its speed in 0.01 Hz, for the pictur
 
 static void spin_block(uint32_t n)
 {
-    int32_t s = cur.p[P_SPIN] + lf.spin, a, u, v, gl, gr, tr, tgt;
+    int32_t s = cur.p[P_SPIN] + lf.spin + (cur.p[P_SPIN] > 0 ? GDR(gdr.spin) : 0), a, u, v, gl, gr, tr, tgt;
     s = s < 0 ? 0 : s > 100 ? 100 : s;
     tgt = s ? (int32_t)(12 + 1188 * s * s / 10000) : 0;           /* 0.01 Hz */
     {
