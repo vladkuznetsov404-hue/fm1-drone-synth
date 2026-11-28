@@ -19,8 +19,14 @@
 #ifndef FELUCCA_UART
 #define FELUCCA_UART 1           /* TRS MIDI IN on UART1 / PH8 */
 #endif
-#define FELUCCA_CDC 0            /* (Felucca's serial console and USB audio input need its app; not in the kit) */
-#define FELUCCA_UAC 0
+#define FELUCCA_CDC 0            /* (Felucca's serial console needs its app; not in the kit) */
+#ifndef FELUCCA_UAC
+#define FELUCCA_UAC 1            /* USB audio input (UAC1, usb.c): the master output over the cable. The update loader
+                                  * builds usb.c without it (MIDI only) */
+#endif
+#ifndef FELUCCA_UAC_48K
+#define FELUCCA_UAC_48K 0        /* 44.1 kHz only: the 48 kHz resampler's table (uac_fir.h) is not in the kit */
+#endif
 #ifndef FELUCCA_ID
 #define FELUCCA_ID "FM-1_900"    /* package identity (build.py: the .fwsc marker string); the installers check it */
 #endif

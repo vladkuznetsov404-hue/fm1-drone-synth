@@ -318,9 +318,12 @@ REC presses).
   sent back (a host that routes the FM-1's output to its input would latch and unlatch it in a loop). The four macros go
   out as **CC 20 MASSA, 21 BEATS, 22 DARK, 23 BREATH** (0..127) when they change, one per block at most. The platform's
   ring (64 events) drops what a host does not read.
-- **USB audio is not built**: the platform has the code (`FELUCCA_UAC`, an isochronous endpoint) but it is off in the kit, and
-  turning it on changes the USB descriptors that the update path relies on. Without recovery hardware it is not worth the
-  risk of an install that cannot be replaced; it waits for an FM-1-transporter (or the unit's headphone out into an interface).
+- **USB audio in** (milestone 14): the master output goes to the computer as a class-compliant USB audio device
+  (16-bit stereo, 44.1 kHz only, the platform's UAC1 code, `FELUCCA_UAC`; `audio.c` hands each block to the ring), next
+  to the MIDI ports, so a DAW records the FM-1 over the cable. The host must run at **44100 Hz**: the 48 kHz resampler's
+  table is not in the kit. The ring is fed only while the host reads. The MASTER knob (volume) is before it, as the
+  output is. The update loader stays MIDI only. The USB descriptors changed (the device is now audio + MIDI); the
+  installer finds it by the same MIDI name.
 - No clock in, no MIDI CC in, in v1 (clock and CC in are read by the platform but the app ignores them).
 
 ## Open questions
@@ -340,7 +343,7 @@ REC presses).
 
 ## Out of scope for v1
 
-Step sequencer, arpeggiator, saving the tape, MIDI CC / clock in, USB audio (see MIDI), true stereo (the chorus and
+Step sequencer, arpeggiator, saving the tape, MIDI CC / clock in, USB audio at 48 kHz, true stereo (the chorus and
 reverb are mono; only SPIN pans), audio input (the FM-1 has none).
 
 ## Milestones
@@ -375,5 +378,9 @@ reverb are mono; only SPIN pans), audio input (the FM-1 has none).
     checks; the speaker, the ISR load and the frame rate wait for the unit.
 13. **Hands-on round** (built): the MASTER knob is the volume; MIDI out over USB (notes and the four macros); the list of
     sounds while PRESETS turns; knob acceleration; REC + the leftmost key erases the loop; the SCL generator (LIFE, NOTES,
-    SPAN, DRIFT). USB audio waits for recovery hardware. All host-tested; the knob's range and feel, the MIDI on a real host
+    SPAN, DRIFT). All host-tested; the knob's range and feel, the MIDI on a real host
     and the generator's taste wait for the unit.
+14. **USB audio** (built, not yet on the unit): `FELUCCA_UAC` on for the app (44.1 kHz), the ring fed from `audio.c`;
+    descriptors and the ring host-tested (`tests/usb_desc_test.c`, `tests/uac_test.c`). Unknown until it runs: whether
+    the audio ISR leaves the USB poll enough time (the unit once vanished from USB while a sound played; the poll waits
+    for the first timer tick after a render).

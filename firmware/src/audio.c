@@ -30,6 +30,9 @@ static void audio_block(int32_t *out, uint32_t n)       /* the app's block, then
 {
     uint32_t i;
     app_audio(out, n);
+#if FELUCCA_UAC
+    uac_tap(out, n);                            /* the USB audio ring takes the Q15 block (usb.c) */
+#endif
     for (i = 0; i < n; i++) {
         out[2u * i] *= 1 << OUT_SHIFT;
         out[2u * i + 1u] *= 1 << OUT_SHIFT;
@@ -76,6 +79,9 @@ void fm1_alnk0_irq(void)                       /* via isr_alnk0 (hal/fm1_isr.S) 
     if (p & FM1_AUDIO_HALF) {
         uint32_t half = fm1_audio_free_half(), b, us;
         int32_t *o = &abuf[half * HALF_WORDS];
+#if FELUCCA_UAC
+        uac_render_start();                             /* is the host reading? prime or drop the ring (usb.c) */
+#endif
         for (b = 0; b < HALF_FRAMES; b += CTL)
             audio_block(o + 2u * b, CTL);
         if (aud_mute | aud_muted)

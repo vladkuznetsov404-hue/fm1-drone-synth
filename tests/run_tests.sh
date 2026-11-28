@@ -9,7 +9,8 @@
 # PLATFORM (from Felucca / M-Vave-OP1, the code that decides whether a bad image can still be replaced):
 #   input        the key / button debounce and encoders of hal/fm1_input.h against a simulated scan (input_test.c)
 #   TRS MIDI     the running-status parser (midi_uart.c) and usb.c's SysEx frames (midi_uart_test.c)
-#   USB          the descriptors of this build (MIDI only: no console, no audio input) (usb_desc_test.c)
+#   USB          the descriptors of the loader (MIDI only) and of this app (MIDI + audio input, 44.1 kHz), the audio
+#                ring as audio.c drives it (usb_desc_test.c, uac_test.c)
 #   update       ota.c's M-UPGRADE entry with this build's package against a fake updater and a simulated NOR
 #                (ota_test.c); the update loader installing this build over another app (ldr_test.c); the
 #                installer CLI against a simulated FM-1, including the return to official V15 (install_test.py)
@@ -41,7 +42,13 @@ $CC -o "$OUT/midi_uart_test" tests/midi_uart_test.c
 run "TRS MIDI parser, USB SysEx frames" "$OUT/midi_uart_test"
 
 $CC -DT_CDC=0 -DT_UAC=0 -DT_LAYOUT=0 -DT_ON=1 -DT_48K=1 -o "$OUT/usb_desc_test" tests/usb_desc_test.c
-run "USB descriptors: MIDI only (no console, no audio input)" "$OUT/usb_desc_test"
+run "USB descriptors: MIDI only (no console, no audio input: the update loader)" "$OUT/usb_desc_test"
+
+$CC -DT_CDC=0 -DT_UAC=1 -DT_LAYOUT=0 -DT_ON=1 -DT_48K=0 -o "$OUT/usb_desc_uac_test" tests/usb_desc_test.c
+run "USB descriptors: MIDI + audio input at 44.1 kHz (this app)" "$OUT/usb_desc_uac_test"
+
+$CC -o "$OUT/uac_test" tests/uac_test.c
+run "USB audio ring: render -> ring -> 1 ms packets, no loss, clip, restart, no reader" "$OUT/uac_test"
 
 $CC -w -DOWN_PKG=1 -o "$OUT/ota_test" tests/ota_test.c
 run "M-UPGRADE entry (own loader)" "$OUT/ota_test" build/firmware.fwsc

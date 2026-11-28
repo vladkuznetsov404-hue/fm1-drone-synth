@@ -184,7 +184,7 @@ def ld_regions():
 
 def build_app():
     flags = [*CFLAGS, "-Ifirmware/hal", "-Ifirmware/src", "-Ifirmware/app", "-Ibuild/gen"]
-    for flag in ("FELUCCA_FLASH", "FELUCCA_OTA", "FELUCCA_OTA_DRYRUN", "FELUCCA_OTA_RAMONLY", "FELUCCA_UART"):
+    for flag in ("FELUCCA_FLASH", "FELUCCA_OTA", "FELUCCA_OTA_DRYRUN", "FELUCCA_OTA_RAMONLY", "FELUCCA_UART", "FELUCCA_UAC"):
         v = os.environ.get(flag)    # unset: the default in firmware/src/firmware.c
         if v in ("0", "1"):
             flags.append(f"-D{flag}={v}")
