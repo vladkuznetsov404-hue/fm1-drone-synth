@@ -3,5 +3,8 @@
 # Rewritten by BUDGET_UPDATE=1. fm1_alnk0_irq 18632 -> 22155 (+19 %): the grain delay, the cassette's pitch grains, the
 # SHOEGAZE chorus and reverb (intended; the static count, not measured load: read audio_cpu_q8 on the first install).
 fm1_alnk0_irq 22155
-fm1_timer5_irq 4836
+# fm1_timer5_irq 4836 -> 40646: usb_poll now inlines uac_service / uac_packet (USB audio, usb.c): a packet of 44..45 frames
+# is copied from the ring each ms (about 300 instructions a ms, against 10 scan ticks and 2 polls a ms; the static count
+# charges its loops at x4 a level and a table of 36 reads of the SIE). Runs outside the render, never nested in it.
+fm1_timer5_irq 40646
 aud_fade_half 17
